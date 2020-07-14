@@ -1,5 +1,8 @@
 # Specific to this repo
 output/
+upload_*/
+upload_*.zip
+.vscode/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
