@@ -1,0 +1,10 @@
+# packages required by meta-ml but not in environment.txt
+colorlover
+click==7.0
+kaggle
+openml==0.9.0
+plotly
+psutil
+yamlordereddictloader
+
+meta-ml==0.0.20
