@@ -1,6 +1,6 @@
 # Black Box Optimization Challenge
-
 This repo contains the starter kit for the [black box optimization challenge](https://bbochallenge.com/) at [NeurIPS 2020](https://neurips.cc/Conferences/2020/CompetitionTrack).
+
 Upload submissions [here](https://bbochallenge.com/my-submissions).
 
 The submission site is open July 10, 2020 - October 15, 2020.

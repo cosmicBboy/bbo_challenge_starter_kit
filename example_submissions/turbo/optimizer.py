@@ -94,6 +94,7 @@ class TurboOptimizer(AbstractOptimizer):
 
         # Unwarp the suggestions
         suggestions = self.space_x.unwarp(X_next)
+
         return suggestions
 
     def observe(self, X, y):

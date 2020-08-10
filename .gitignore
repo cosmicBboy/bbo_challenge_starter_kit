@@ -3,6 +3,7 @@ output/
 upload_*/
 upload_*.zip
 .vscode/
+*.pickle
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

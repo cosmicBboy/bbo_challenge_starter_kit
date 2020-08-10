@@ -1,0 +1,46 @@
+{
+    "metalearn-base": [
+        "metalearn/optimizer.py",
+        {
+            "model_name": null,
+            "learning_rate": 0.00003,
+            "entropy_coef": 0.01,
+            "normalize_reward": true,
+            "weight_decay": 0.1
+        }
+    ],
+    "metalearn-pretrained-0000": [
+        "metalearn/optimizer.py",
+        {
+            "pretrained_model_name": null,
+            "model_name": "metalearn-pretrained-0000",
+            "learning_rate": 0.03,
+            "entropy_coef": 1.0,
+            "normalize_reward": true,
+            "weight_decay": 0.1
+        }
+    ],
+    "metalearn-pretrained-0001": [
+        "metalearn/optimizer.py",
+        {
+            "pretrained_model_name": "metalearn-pretrained-0000",
+            "model_name": "metalearn-pretrained-0001"
+        }
+    ],
+    "metalearn-from-pretrained-0000": [
+        "metalearn/optimizer.py",
+        {
+            "pretrained_model_name": "metalearn-pretrained-0000",
+            "model_name": null
+        }
+    ],
+    "metalearn-from-pretrained-0001": [
+        "metalearn/optimizer.py",
+        {
+            "pretrained_model_name": "metalearn-pretrained-0001",
+            "model_name": null,
+            "entropy_coef": 0.0,
+            "entropy_decrement": 0.0
+        }
+    ]
+}

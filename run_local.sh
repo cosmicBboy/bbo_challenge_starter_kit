@@ -4,12 +4,12 @@ set -ex
 set -o pipefail
 
 # Default number of steps and batch size for the challenge
-# N_STEP=16
-# N_BATCH=8
+N_STEP=16
+N_BATCH=8
 
 # For a fast experiment:
-N_STEP=15
-N_BATCH=1
+# N_STEP=15
+# N_BATCH=1
 
 # Input args
 CODE_DIR=$1
@@ -39,11 +39,11 @@ bayesmark-init -dir $DB_ROOT -b $DBID
 cp ./input/baseline-$N_STEP-$N_BATCH.json $DB_ROOT/$DBID/derived/baseline.json
 
 # By default, runs on all models (-c), data (-d), metrics (-m)
-bayesmark-launch -dir $DB_ROOT -b $DBID -n $N_STEP -r $N_REPEAT -p $N_BATCH -o $OPT --opt-root $OPT_ROOT -v -c SVM DT -d boston digits
+# bayesmark-launch -dir $DB_ROOT -b $DBID -n $N_STEP -r $N_REPEAT -p $N_BATCH -o $OPT --opt-root $OPT_ROOT -v -c SVM DT -d boston digits
 # To run on all problems use instead (slower):
 # bayesmark-launch -dir $DB_ROOT -b $DBID -n $N_STEP -r $N_REPEAT -p $N_BATCH -o $OPT --opt-root $OPT_ROOT -v
 
-# bayesmark-launch -dir $DB_ROOT -b $DBID -n $N_STEP -r $N_REPEAT -p $N_BATCH -o $OPT --opt-root $OPT_ROOT -v -c SVM DT -d digits -m acc
+bayesmark-launch -dir $DB_ROOT -b $DBID -n $N_STEP -r $N_REPEAT -p $N_BATCH -o $OPT --opt-root $OPT_ROOT -v -d boston -m mae
 # bayesmark-launch -dir $DB_ROOT -b $DBID -n $N_STEP -r $N_REPEAT -p $N_BATCH -o $OPT --opt-root $OPT_ROOT -v -c SVM DT -d boston -m mse
 
 # Now aggregate the results
