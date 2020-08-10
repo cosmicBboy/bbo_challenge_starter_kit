@@ -1,4 +1,5 @@
 # Specific to this repo
+*.pickle
 output/
 upload_*/
 upload_*.zip
