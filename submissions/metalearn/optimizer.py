@@ -116,6 +116,7 @@ def load_pretrained_metalearner(path, algorithm_space):
         # load meta_rnn, critic, and micro_action weights, ignoreing any
         # weights named "action_*"
         print("only loading meta-learning pre-trained weights")
+        import ipdb; ipdb.set_trace()
         controller.load_state_dict({
             **{
                 k: v for k, v in model_config["weights"].items()
