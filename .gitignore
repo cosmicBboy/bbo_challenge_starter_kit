@@ -6,6 +6,7 @@ upload_*/
 upload_*.zip
 .vscode/
 *.pickle
+custom_output/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
