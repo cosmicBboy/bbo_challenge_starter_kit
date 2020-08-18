@@ -41,4 +41,6 @@ cp ./input/baseline-$N_STEP-$N_BATCH.json $DB_ROOT/$DBID/derived/baseline.json
 # By default, runs on all models (-c), data (-d), metrics (-m)
 # bayesmark-launch -dir $DB_ROOT -b $DBID -n $N_EVAL -r $N_REPEAT -p $N_BATCH -o $OPT --opt-root $OPT_ROOT -v -c DT SVM -d digits -m acc
 # To run on all problems use instead (slower):
-bayesmark-launch -dir $DB_ROOT -b $DBID -n $N_EVAL -r $N_REPEAT -p $N_BATCH -o $OPT --opt-root $OPT_ROOT -v
+# bayesmark-launch -dir $DB_ROOT -b $DBID -n $N_EVAL -r $N_REPEAT -p $N_BATCH -o $OPT --opt-root $OPT_ROOT -v
+
+bayesmark-launch -dir $DB_ROOT -b $DBID -n $N_EVAL -r $N_REPEAT -p $N_BATCH -o $OPT --opt-root $OPT_ROOT -c DT -d boston -m mse

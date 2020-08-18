@@ -2,11 +2,17 @@
     "metalearn-base": [
         "metalearn/optimizer.py",
         {
-            "model_name": null,
-            "learning_rate": 0.00003,
-            "entropy_coef": 0.01,
-            "normalize_reward": true,
-            "weight_decay": 0.1
+            "pretrained_model_name": null,
+            "model_name": "metalearn-base",
+            "model_size": 32,
+            "num_rnn_layers": 1,
+            "learning_rate": 0.8,
+            "entropy_coef": 10.0,
+            "entropy_factor": 0,
+            "weight_decay": 0.001,
+            "dropout_rate": 0.05,
+            "eps_clip": 1,
+            "gamma": 0.99
         }
     ],
     "metalearn-pretrained-0000": [
@@ -14,17 +20,25 @@
         {
             "pretrained_model_name": null,
             "model_name": "metalearn-pretrained-0000",
+            "model_size": 4,
+            "num_rnn_layers": 1,
             "learning_rate": 0.03,
-            "entropy_coef": 1.0,
-            "normalize_reward": true,
-            "weight_decay": 0.1
+            "entropy_coef": 100.0,
+            "entropy_factor": 0.9,
+            "weight_decay": 1.0,
+            "dropout_rate": 0.1,
+            "eps_clip": 0.1,
+            "gamma": 0.99
         }
     ],
     "metalearn-pretrained-0001": [
         "metalearn/optimizer.py",
         {
-            "pretrained_model_name": "metalearn-pretrained-0000",
-            "model_name": "metalearn-pretrained-0001"
+            "pretrained_model_name": null,
+            "model_name": "metalearn-pretrained-0001",
+            "learning_rate": 0.03,
+            "entropy_coef": 0.01,
+            "weight_decay": 0.1
         }
     ],
     "metalearn-from-pretrained-0000": [
@@ -38,9 +52,10 @@
         "metalearn/optimizer.py",
         {
             "pretrained_model_name": "metalearn-pretrained-0001",
-            "model_name": null,
-            "entropy_coef": 0.0,
-            "entropy_decrement": 0.0
+            "model_name": "null",
+            "learning_rate": 0.03,
+            "entropy_coef": 0.01,
+            "weight_decay": 0.1
         }
     ]
 }

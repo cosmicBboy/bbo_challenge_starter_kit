@@ -1,3 +1,5 @@
+import copy
+import hashlib
 import os
 from collections import defaultdict
 from pathlib import Path
@@ -6,19 +8,15 @@ import dill
 import numpy as np
 import torch
 import torch.nn as nn
+import scipy.stats as ss
 
 from metalearn.algorithm_space import AlgorithmSpace
 from metalearn.components import algorithm_component, hyperparameter
 from metalearn.data_types import AlgorithmType
 from metalearn.metalearn_controller import MetaLearnController
 from metalearn.metalearn_reinforce import _check_buffers
-from metalearn import scorers
-
 from bayesmark.abstract_optimizer import AbstractOptimizer
 from bayesmark.experiment import experiment_main
-from bayesmark.space import JointSpace
-
-from pprint import pprint
 
 
 EPSILON = np.finfo(np.float32).eps.item()
@@ -31,7 +29,29 @@ class Algorithm:
         pass
 
 
-def create_algorithm_space(api_config, max_interp):
+def hash_api_config(api_config):
+    algo_hash = hashlib.sha256()
+    algo_hash.update(str(api_config).encode())
+    return algo_hash.hexdigest()[:7]
+
+
+def order_stats(X):
+    _, idx, cnt = np.unique(X, return_inverse=True, return_counts=True)
+    obs = np.cumsum(cnt)  # Need to do it this way due to ties
+    o_stats = obs[idx]
+    return o_stats
+
+
+def copula_standardize(X):
+    X = np.nan_to_num(np.asarray(X))  # Replace inf by something large
+    assert X.ndim == 1 and np.all(np.isfinite(X))
+    o_stats = order_stats(X)
+    quantile = np.true_divide(o_stats, len(X) + 1)
+    X_ss = ss.norm.ppf(quantile)
+    return X_ss
+
+
+def create_algorithm_space(api_config):
     # use bayesmark JointSpace class to pre-define grid of values
     grid_space = defaultdict(dict)
 
@@ -68,7 +88,7 @@ def create_algorithm_space(api_config, max_interp):
     return AlgorithmSpace(
         classifiers=[
             algorithm_component.AlgorithmComponent(
-                "Algorithm",
+                f"Algorithm_{hash_api_config(api_config)}",
                 Algorithm,
                 component_type=AlgorithmType.ESTIMATOR,
                 hyperparameters=hyperparameters,
@@ -81,57 +101,38 @@ def create_algorithm_space(api_config, max_interp):
     )
 
 
-def create_controller(algorithm_space):
+def create_controller(
+    algorithm_space,
+    model_size=64,
+    num_rnn_layers=3,
+    dropout_rate=0.0,
+    **kwargs
+):
     return MetaLearnController(
         metafeature_size=1,
-        input_size=64,
-        hidden_size=64,
-        output_size=64,
+        input_size=model_size,
+        hidden_size=model_size,
+        output_size=model_size,
         a_space=algorithm_space,
         mlf_signature=[AlgorithmType.ESTIMATOR],
-        dropout_rate=0.0,
-        num_rnn_layers=3,
+        dropout_rate=dropout_rate,
+        num_rnn_layers=num_rnn_layers,
+        **kwargs
     )
 
 
 def scalar_tensor_3d(val):
-    x = torch.zeros(1, 1, 1)
+    x = torch.zeros(1, 1, 1).requires_grad_()
     return x + val
 
 
-def load_pretrained_metalearner(path, algorithm_space):
-    model_config = torch.load(path, pickle_module=dill)
-    # create a new controller based on algorithm_space
-    controller = create_controller(algorithm_space)
-
-    pretrained_algo, *_ = model_config["config"]["a_space"].classifiers
-    algo, *_ = algorithm_space.classifiers
-
-    # TODO: make sure that algorithm components are handled correctly here:
-    # - hash the str repr of the api_config to uniquely identify api_configs
-    # - loading a pretrained model should also load the pretrained "action_*"
-    #   weights so that they are preserved
-    if algo.hyperparameters != pretrained_algo.hyperparameters:
-        # if pretrained algorithm has different hyperaparemeters, only
-        # load meta_rnn, critic, and micro_action weights, ignoreing any
-        # weights named "action_*"
-        print("only loading meta-learning pre-trained weights")
-        import ipdb; ipdb.set_trace()
-        controller.load_state_dict({
-            **{
-                k: v for k, v in model_config["weights"].items()
-                if not k.startswith("action_")
-            },
-            **{
-                k: v for k, v in controller.named_parameters()
-                if k.startswith("action_")
-            }
-        })
-    else:
-        print("loading all pre-trained weights")
-        controller.load_state_dict(model_config["weights"])
-
-    return controller
+def load_pretrained_metalearner(path, algorithm_space, **kwargs):
+    pretrained_controller = torch.load(path, pickle_module=dill)
+    return create_controller(
+        algorithm_space,
+        pretrained_controller=pretrained_controller,
+        **kwargs,
+    )
 
 
 class MetalearnOptimizer(AbstractOptimizer):
@@ -142,15 +143,17 @@ class MetalearnOptimizer(AbstractOptimizer):
         self,
         api_config,
         pretrained_model_name=None,
-        model_name="submission_20200809_01",
-        max_interp=10,
+        model_name=None,
+        model_size=64,
+        num_rnn_layers=3,
         learning_rate=0.03,
         weight_decay=0.1,
         dropout_rate=0.1,
         gamma=0.0,
-        entropy_coef=1.0,
-        entropy_decrement=0.0,
+        entropy_coef=100.0,
+        entropy_factor=0.9,
         normalize_reward=True,
+        eps_clip=1.0,
     ):
         """Build wrapper class to use optimizer in benchmark.
 
@@ -179,22 +182,33 @@ class MetalearnOptimizer(AbstractOptimizer):
             print("loading existing model in this run %s" % self.model_file)
             self.controller = load_pretrained_metalearner(
                 self.pretrained_dir / model_name / "model.pickle",
-                create_algorithm_space(api_config, max_interp)
+                create_algorithm_space(api_config),
+                model_size=model_size,
+                num_rnn_layers=num_rnn_layers,
+                dropout_rate=dropout_rate,
             )
-        if self.pretrained_model_name is not None:
+        elif self.pretrained_model_name is not None:
             print("loading pre-trained model %s" % self.pretrained_model_name)
             self.controller = load_pretrained_metalearner(
                 (
                     self.pretrained_dir / self.pretrained_model_name /
                     "model.pickle"
                 ),
-                create_algorithm_space(api_config, max_interp)
+                create_algorithm_space(api_config),
+                model_size=model_size,
+                num_rnn_layers=num_rnn_layers,
+                dropout_rate=dropout_rate,
             )
         else:
             print("initializing new model")
             self.controller = create_controller(
-                create_algorithm_space(api_config, max_interp)
+                create_algorithm_space(api_config),
+                model_size=model_size,
+                num_rnn_layers=num_rnn_layers,
+                dropout_rate=dropout_rate
             )
+
+        self.n_candidates = min(len(api_config) * 50, 5000)
 
         # optimizer
         self.optim = torch.optim.Adam(
@@ -204,23 +218,24 @@ class MetalearnOptimizer(AbstractOptimizer):
             weight_decay=weight_decay,
         )
 
+        self.memory = {"action_logprobs": []}
+
         # hyperparameters
         self.learning_rate = learning_rate
         self.gamma = gamma
-        self._entropy_coef = entropy_coef
         self.entropy_coef = entropy_coef
-        self.entropy_decrement = entropy_decrement
-        self.normalize_reward = normalize_reward
+        self.dropout_rate = dropout_rate
+        self.entropy_factor = entropy_factor
+        self.eps_clip = eps_clip
 
         # initial states
         self.last_value = None
+        self.prev_action = self.controller.init_action()
+        self.prev_hidden = self.controller.init_hidden()
         self.prev_reward = scalar_tensor_3d(0)
-
-        # track controller states
-        self.action_activations = []
+        self.global_reward_max = None
 
         # track optimization stats
-        self.call_metrics = defaultdict(int)
         self.history = defaultdict(list)
 
     def suggest(self, n_suggestions=1):
@@ -238,31 +253,37 @@ class MetalearnOptimizer(AbstractOptimizer):
             function. Each suggestion is a dictionary where each key
             corresponds to a parameter being optimized.
         """
-        self.call_metrics["suggest_calls"] += 1
 
         suggestions = []
-        prev_action = self.controller.init_action()
-        prev_hidden = self.controller.init_hidden()
-        for i in range(n_suggestions):
+        prev_action = self.prev_action
+        prev_hidden = self.prev_hidden
+
+        candidate_suggestions = []
+        candidate_buffers = defaultdict(list)
+        for i in range(self.n_candidates):
+        # for _ in range(n_suggestions):
             value, action, action_activation, hidden = self.controller(
-                prev_action=prev_action,
-                prev_reward=self.prev_reward,
-                hidden=prev_hidden,
+                # prev_action=prev_action,
+                # prev_reward=self.prev_reward,
+                # hidden=prev_hidden,
+                prev_action=self.controller.init_action(),
+                prev_reward=scalar_tensor_3d(1),
+                hidden=self.controller.init_hidden(),
                 # metafeatures don't apply so it'll just be a constant
                 metafeatures=scalar_tensor_3d(1),
                 target_type=None,
             )
 
-            self.action_activations.append(action_activation)
-            self.controller.value_buffer.append(value)
-            self.controller.log_prob_buffer.append(
-                [a["log_prob"] for a in action]
+            candidate_buffers["values"].append(value.squeeze())
+            # exclude algorithm selection action
+            candidate_buffers["log_prob"].append(
+                torch.cat([a["log_prob"] for a in action[1:]])
             )
-            self.controller.entropy_buffer.append(
-                [a["entropy"] for a in action]
+            candidate_buffers["entropy"].append(
+                torch.cat([a["entropy"] for a in action[1:]])
             )
 
-            suggestions.append(self.action_to_suggestion(action))
+            candidate_suggestions.append(self.action_to_suggestion(action))
             prev_action, prev_hidden = action_activation, hidden
 
         # get last value for computing Q values
@@ -274,21 +295,29 @@ class MetalearnOptimizer(AbstractOptimizer):
             target_type=None,
         )
 
+        self.prev_action = prev_action.detach()
+        self.prev_hidden = prev_hidden.detach()
+
+        # TODO: try generating more than n_suggestions, ranking by value
+        # prediction, and sending off the top and bottom n_suggestions / 2
+        # only add actions associated with the selected suggestions to the
+        # {value, log_prob, entropy} buffers.
+
+        suggestions = self.select_candidates(
+            n_suggestions, candidate_suggestions, candidate_buffers
+        )
+
         # make sure suggestions are within the bounds
-        # _check_suggestions(suggestions, self.api_config)
         api_config = self.api_config
         for suggestion in suggestions:
             for param, val in suggestion.items():
                 if api_config[param]["type"] in {"int", "real"}:
                     min_val, max_val = api_config[param]["range"]
-                    if not min_val <= val <= max_val:
-                        import ipdb; ipdb.set_trace()
+                    assert min_val <= val <= max_val
                 elif api_config[param]["cat"]:
-                    if val not in api_config[param]["values"]:
-                        import ipdb; ipdb.set_trace()
+                    assert val in api_config[param]["values"]
                 elif api_config[param]["bool"]:
-                    if val not in [0, 1]:
-                        import ipdb; ipdb.set_trace()
+                    assert val in [0, 1]
 
         return suggestions
 
@@ -310,31 +339,34 @@ class MetalearnOptimizer(AbstractOptimizer):
         # is better.
         higher_is_better = any(x < 0 for x in y)
 
-        # if lower scores are better, assume a metric where 0 is the best score
-        # and inf is the worst, e.g. MSE, NLL. In these cases, bound scores so
-        # that 0.0 maps to 1.0 and inf maps to 0
-        rewards = [
-            -x if higher_is_better else
-            scorers.exponentiated_log(x)
-            for x in y
-        ]
-        print(
-            "mean_reward: {:04f}; mean_y: {:04f}; max_reward: {:04f}".format(
-                np.mean(rewards), np.mean(y), np.max(rewards)
-            )
+        self.y = y  
+
+        yy = copula_standardize(y)
+        rewards = [x if higher_is_better else -x for x in yy]
+        norm = (
+            np.max(rewards)
+            if self.global_reward_max is None
+            else self.global_reward_max
         )
+        norm_rewards = [r - 0 for r in rewards]
+        self.global_reward_max = max(np.max(rewards), norm)
+        print(
+            "[reward dist]", {
+                "best_y": np.max(y) if higher_is_better else np.min(y),
+                "worst_y": np.min(y) if higher_is_better else np.max(y),
+                "mean_y": np.mean(y),
+                "mean_reward": np.mean(rewards),
+                "std_reward": np.std(rewards),
+                "max_reward": np.max(rewards),
+            }
+        )
+        print("[max reward action]", X[np.argmax(rewards)])
+        print("[min reward action]", X[np.argmin(rewards)])
 
-        self.call_metrics["observe_calls"] += 1
-        self.controller.reward_buffer.extend(rewards)
+        self.controller.reward_buffer.extend(norm_rewards)
         # set previous reward to mean of rewards
-        self.prev_reward = scalar_tensor_3d(np.mean(rewards))
+        self.prev_reward = scalar_tensor_3d(np.mean(norm_rewards))
         self.update_controller()
-
-        # save the model after every update
-        if self.model_name is not None:
-            self.controller.save(
-                self.pretrained_dir / self.model_name / "model.pickle"
-            )
 
         # reset rewards and log probs
         del self.controller.value_buffer[:]
@@ -342,7 +374,16 @@ class MetalearnOptimizer(AbstractOptimizer):
         del self.controller.reward_buffer[:]
         del self.controller.entropy_buffer[:]
 
+        # save the model after every update
+        if self.model_name is not None:
+            torch.save(
+                self.controller,
+                self.pretrained_dir / self.model_name / "model.pickle",
+                pickle_module=dill
+            )
+
         print(
+            "[controller losses]",
             {
                 k: self.history[k][-1] for k in [
                     "actor_critic_loss",
@@ -351,19 +392,21 @@ class MetalearnOptimizer(AbstractOptimizer):
                     "entropy_loss",
                     "grad_norm",
                 ]
-            }
+            },
+            "\n"
         )
+        import time; time.sleep(3)
 
         # decrement entropy coef
         if self.entropy_coef > 0:
-            self.entropy_coef -= self.entropy_decrement
+            self.entropy_coef *= self.entropy_factor
         if self.entropy_coef < 0:
             self.entropy_coef = 0
 
     def action_to_suggestion(self, action):
         """Convert controller action output into suggestion."""
         hyperparameters = {
-            x["action_name"].replace("Algorithm__", ""): x["choice"]
+            x["action_name"].split("__")[-1]: x["choice"]
             # the first action is always the estimator
             for x in action[1:]
         }
@@ -371,12 +414,30 @@ class MetalearnOptimizer(AbstractOptimizer):
         assert hyperparameters.keys() == self.api_config.keys()
         return hyperparameters
 
+    def select_candidates(
+        self, n_suggestions, candidate_suggestions, candidate_buffers
+    ):
+        predicted_values = torch.stack(candidate_buffers["values"]).detach()
+        top_idx = torch.argsort(predicted_values, descending=True)
+        suggestions = []
+        for i in top_idx[:n_suggestions]:
+            suggestions.append(candidate_suggestions[i])
+            self.controller.value_buffer.append(candidate_buffers["values"][i])
+            self.controller.log_prob_buffer.append(
+                candidate_buffers["log_prob"][i]
+            )
+            self.controller.entropy_buffer.append(
+                candidate_buffers["entropy"][i]
+            )
+        return suggestions
+
     def update_controller(self):
-        # _check_buffers(
-        #     self.controller.value_buffer,
-        #     self.controller.log_prob_buffer,
-        #     self.controller.reward_buffer,
-        #     self.controller.entropy_buffer)
+        _check_buffers(
+            self.controller.value_buffer,
+            self.controller.log_prob_buffer,
+            self.controller.reward_buffer,
+            self.controller.entropy_buffer
+        )
 
         n = len(self.controller.reward_buffer)
 
@@ -385,40 +446,62 @@ class MetalearnOptimizer(AbstractOptimizer):
 
         # compute Q values
         returns = torch.zeros(len(self.controller.value_buffer))
-        R = self.last_value
+        next_value = 0
         for t in reversed(range(n)):
-            R = self.controller.reward_buffer[t] + self.gamma * R
+            R = self.controller.reward_buffer[t] + self.gamma * next_value
             returns[t] = R
+            next_value = self.controller.value_buffer[t]
 
-        # mean-center and std-scale returns
-        if self.normalize_reward:
-            returns = returns - returns.mean()
-            # sd = returns.std()
-            # if sd == 0:
-            #     returns = returns / (sd + EPSILON)
-
-        values = torch.cat(self.controller.value_buffer).squeeze()
+        returns = (returns - returns.mean()) / (returns.std() + 1e-5)
+        values = torch.stack(self.controller.value_buffer)
         advantage = returns - values
 
-        # compute loss
-        actor_loss = [
-            -log_prob * action
-            for log_probs, action in zip(
-                self.controller.log_prob_buffer, advantage
+        old_action_logprobs = (
+            [torch.zeros_like(x) for x in self.controller.log_prob_buffer]
+            if len(self.memory["action_logprobs"]) == 0
+            else self.memory["action_logprobs"]
+        )
+
+        # compute the ratio of new policy actions / old policy actions.
+        # this is nested because each reward/value is associated with multiple
+        # micro-actions generated by the controller
+        ratios = [
+            torch.exp(x - y) for x, y in zip(
+                self.controller.log_prob_buffer,
+                old_action_logprobs,
             )
-            for log_prob in log_probs
         ]
-        actor_loss = torch.cat(actor_loss).mean()
+
+        # compute surrogate losses
+        surr1 = torch.stack([
+            r * adv
+            for ratio, adv in zip(ratios, advantage)
+            for r in ratio
+        ])
+
+        surr2 = torch.stack([
+            r * adv
+            for ratio, adv in zip(ratios, advantage)
+            for r in (
+                torch.clamp(ratio, 1.0 - self.eps_clip, 1.0 + self.eps_clip)
+            )
+        ])
+
+        # print("y", self.y)
+        # print("global max reward", self.global_reward_max)
+        # print("rewards", self.controller.reward_buffer)
+        # print("returns", returns)
+        # print("values", values)
+        # print("advantage", advantage)
+        # import ipdb; ipdb.set_trace()
+
+        actor_loss = -torch.min(surr1, surr2).mean()
         critic_loss = 0.5 * advantage.pow(2).mean()
 
         # entropy loss term, negate the mean since we want to maximize entropy
-        entropies = torch.cat([
-            e * self.entropy_coef
-            for entropy_list in self.controller.entropy_buffer
-            for e in entropy_list
-        ]).squeeze()
-        entropy_loss = -entropies.mean()
-
+        entropy_loss = -torch.mean(
+            torch.cat(self.controller.entropy_buffer) * self.entropy_coef
+        )
         actor_critic_loss = actor_loss + critic_loss + entropy_loss
 
         # one step of gradient descent
@@ -433,11 +516,11 @@ class MetalearnOptimizer(AbstractOptimizer):
                 grad_norm += param_norm.item() ** 2
 
         grad_norm = grad_norm ** 0.5
-
-        # if np.isnan(grad_norm):
-        #     import ipdb; ipdb.set_trace()
-
         self.optim.step()
+
+        self.memory["action_logprobs"] = [
+            x.detach() for x in self.controller.log_prob_buffer
+        ]
 
         self.history["actor_critic_loss"].append(actor_critic_loss.data.item())
         self.history["actor_loss"].append(actor_loss.data.item())

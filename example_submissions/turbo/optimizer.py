@@ -9,6 +9,8 @@ from bayesmark.abstract_optimizer import AbstractOptimizer
 from bayesmark.experiment import experiment_main
 from bayesmark.space import JointSpace
 
+from metalearn import scorers
+
 
 def order_stats(X):
     _, idx, cnt = np.unique(X, return_inverse=True, return_counts=True)
@@ -110,6 +112,23 @@ class TurboOptimizer(AbstractOptimizer):
             Corresponding values where objective has been evaluated
         """
         assert len(X) == len(y)
+        higher_is_better = any(x < 0 for x in y)
+
+        # if lower scores are better, assume a metric where 0 is the best score
+        # and inf is the worst, e.g. MSE, NLL. In these cases, bound scores so
+        # that 0.0 maps to 1.0 and inf maps to 0
+        print(
+            "[reward dist]", {
+                "best_y": np.max(y) if higher_is_better else np.min(y),
+                "worst_y": np.min(y) if higher_is_better else np.max(y),
+                "mean_y": np.mean(y),
+            }
+        )
+        best_idx = np.argmax(y) if higher_is_better else np.argmin(y)
+        worst_idx = np.argmin(y) if higher_is_better else np.argmax(y)
+        print("[max reward action]", X[best_idx])
+        print("[min reward action]", X[worst_idx])
+        print("-------")
         XX, yy = self.space_x.warp(X), np.array(y)[:, None]
 
         if len(self.turbo._fX) >= self.turbo.n_init:
