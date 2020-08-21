@@ -1,4 +1,8 @@
 {
+    "metalearn-swarm": [
+        "metalearn-swarm/optimizer.py",
+        {}
+    ],
     "metalearn-base": [
         "metalearn/optimizer.py",
         {
