@@ -18,7 +18,8 @@ N_REPEAT=$3
 
 # Where output goes
 DB_ROOT=./output
-DBID=run_$(date +"%Y%m%d_%H%M%S")
+# DBID=run_$(date +"%Y%m%d_%H%M%S")
+DBID=run_debug
 
 # Check that bayesmark is installed in this environment
 which bayesmark-init
@@ -28,6 +29,8 @@ which bayesmark-agg
 which bayesmark-anal
 
 # Ensure output folder exists
+rm -rf $DB_ROOT/$DBID
+
 mkdir -p $DB_ROOT
 
 # Copy the baseline file in, we can skip this but we must include RandomSearch in the -o list
@@ -40,8 +43,8 @@ cp ./input/baseline-$N_STEP-$N_BATCH.json $DB_ROOT/$DBID/derived/baseline.json
 # To run on all problems use instead (slower):
 # bayesmark-launch -dir $DB_ROOT -b $DBID -n $N_STEP -r $N_REPEAT -p $N_BATCH -o $OPT --opt-root $OPT_ROOT -v
 
-# bayesmark-launch -dir $DB_ROOT -b $DBID -n $N_STEP -r $N_REPEAT -p $N_BATCH -o $OPT --opt-root $OPT_ROOT -v -c SVM DT -d boston -m mse
-bayesmark-launch -dir $DB_ROOT -b $DBID -n $N_STEP -r $N_REPEAT -p $N_BATCH -o $OPT --opt-root $OPT_ROOT -c DT -d boston -m acc mse
+bayesmark-launch -dir $DB_ROOT -b $DBID -n $N_STEP -r $N_REPEAT -p $N_BATCH -o $OPT --opt-root $OPT_ROOT -v -c SVM -d boston -m mse
+# bayesmark-launch -dir $DB_ROOT -b $DBID -n $N_STEP -r $N_REPEAT -p $N_BATCH -o $OPT --opt-root $OPT_ROOT -c DT -d boston -m acc mse -v
 
 # Now aggregate the results
 bayesmark-agg -dir $DB_ROOT -b $DBID

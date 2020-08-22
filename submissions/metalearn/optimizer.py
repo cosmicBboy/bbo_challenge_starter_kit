@@ -25,6 +25,7 @@ CLIP_GRAD = 1.0
 
 class Algorithm:
     """Generic object, needed by metalearn API but not really used."""
+
     def __init__(self, **kwargs):
         pass
 
@@ -80,9 +81,7 @@ def create_algorithm_space(api_config):
                 raise ValueError(f"type not recognized: {props['type']}")
 
             hyperparameters.append(
-                hyperparam_cls(
-                    param, props["range"][0], props["range"][1]
-                )
+                hyperparam_cls(param, props["range"][0], props["range"][1])
             )
 
     return AlgorithmSpace(
@@ -97,7 +96,7 @@ def create_algorithm_space(api_config):
         regressors=[],
         data_preprocessors=[],
         feature_preprocessors=[],
-        random_state=2001
+        random_state=2001,
     )
 
 
@@ -106,7 +105,7 @@ def create_controller(
     model_size=64,
     num_rnn_layers=3,
     dropout_rate=0.0,
-    **kwargs
+    **kwargs,
 ):
     return MetaLearnController(
         metafeature_size=1,
@@ -117,7 +116,7 @@ def create_controller(
         mlf_signature=[AlgorithmType.ESTIMATOR],
         dropout_rate=dropout_rate,
         num_rnn_layers=num_rnn_layers,
-        **kwargs
+        **kwargs,
     )
 
 
@@ -129,9 +128,7 @@ def scalar_tensor_3d(val):
 def load_pretrained_metalearner(path, algorithm_space, **kwargs):
     pretrained_controller = torch.load(path, pickle_module=dill)
     return create_controller(
-        algorithm_space,
-        pretrained_controller=pretrained_controller,
-        **kwargs,
+        algorithm_space, pretrained_controller=pretrained_controller, **kwargs,
     )
 
 
@@ -191,8 +188,9 @@ class MetalearnOptimizer(AbstractOptimizer):
             print("loading pre-trained model %s" % self.pretrained_model_name)
             self.controller = load_pretrained_metalearner(
                 (
-                    self.pretrained_dir / self.pretrained_model_name /
-                    "model.pickle"
+                    self.pretrained_dir
+                    / self.pretrained_model_name
+                    / "model.pickle"
                 ),
                 create_algorithm_space(api_config),
                 model_size=model_size,
@@ -205,7 +203,7 @@ class MetalearnOptimizer(AbstractOptimizer):
                 create_algorithm_space(api_config),
                 model_size=model_size,
                 num_rnn_layers=num_rnn_layers,
-                dropout_rate=dropout_rate
+                dropout_rate=dropout_rate,
             )
 
         self.n_candidates = min(len(api_config) * 50, 5000)
@@ -261,7 +259,7 @@ class MetalearnOptimizer(AbstractOptimizer):
         candidate_suggestions = []
         candidate_buffers = defaultdict(list)
         for i in range(self.n_candidates):
-        # for _ in range(n_suggestions):
+            # for _ in range(n_suggestions):
             value, action, action_activation, hidden = self.controller(
                 # prev_action=prev_action,
                 # prev_reward=self.prev_reward,
@@ -339,7 +337,7 @@ class MetalearnOptimizer(AbstractOptimizer):
         # is better.
         higher_is_better = any(x < 0 for x in y)
 
-        self.y = y  
+        self.y = y
 
         yy = copula_standardize(y)
         rewards = [x if higher_is_better else -x for x in yy]
@@ -351,14 +349,15 @@ class MetalearnOptimizer(AbstractOptimizer):
         norm_rewards = [r - 0 for r in rewards]
         self.global_reward_max = max(np.max(rewards), norm)
         print(
-            "[reward dist]", {
+            "[reward dist]",
+            {
                 "best_y": np.max(y) if higher_is_better else np.min(y),
                 "worst_y": np.min(y) if higher_is_better else np.max(y),
                 "mean_y": np.mean(y),
                 "mean_reward": np.mean(rewards),
                 "std_reward": np.std(rewards),
                 "max_reward": np.max(rewards),
-            }
+            },
         )
         print("[max reward action]", X[np.argmax(rewards)])
         print("[min reward action]", X[np.argmin(rewards)])
@@ -379,13 +378,14 @@ class MetalearnOptimizer(AbstractOptimizer):
             torch.save(
                 self.controller,
                 self.pretrained_dir / self.model_name / "model.pickle",
-                pickle_module=dill
+                pickle_module=dill,
             )
 
         print(
             "[controller losses]",
             {
-                k: self.history[k][-1] for k in [
+                k: self.history[k][-1]
+                for k in [
                     "actor_critic_loss",
                     "actor_loss",
                     "critic_loss",
@@ -393,9 +393,11 @@ class MetalearnOptimizer(AbstractOptimizer):
                     "grad_norm",
                 ]
             },
-            "\n"
+            "\n",
         )
-        import time; time.sleep(3)
+        import time
+
+        time.sleep(3)
 
         # decrement entropy coef
         if self.entropy_coef > 0:
@@ -436,7 +438,7 @@ class MetalearnOptimizer(AbstractOptimizer):
             self.controller.value_buffer,
             self.controller.log_prob_buffer,
             self.controller.reward_buffer,
-            self.controller.entropy_buffer
+            self.controller.entropy_buffer,
         )
 
         n = len(self.controller.reward_buffer)
@@ -466,26 +468,28 @@ class MetalearnOptimizer(AbstractOptimizer):
         # this is nested because each reward/value is associated with multiple
         # micro-actions generated by the controller
         ratios = [
-            torch.exp(x - y) for x, y in zip(
-                self.controller.log_prob_buffer,
-                old_action_logprobs,
+            torch.exp(x - y)
+            for x, y in zip(
+                self.controller.log_prob_buffer, old_action_logprobs,
             )
         ]
 
         # compute surrogate losses
-        surr1 = torch.stack([
-            r * adv
-            for ratio, adv in zip(ratios, advantage)
-            for r in ratio
-        ])
+        surr1 = torch.stack(
+            [r * adv for ratio, adv in zip(ratios, advantage) for r in ratio]
+        )
 
-        surr2 = torch.stack([
-            r * adv
-            for ratio, adv in zip(ratios, advantage)
-            for r in (
-                torch.clamp(ratio, 1.0 - self.eps_clip, 1.0 + self.eps_clip)
-            )
-        ])
+        surr2 = torch.stack(
+            [
+                r * adv
+                for ratio, adv in zip(ratios, advantage)
+                for r in (
+                    torch.clamp(
+                        ratio, 1.0 - self.eps_clip, 1.0 + self.eps_clip
+                    )
+                )
+            ]
+        )
 
         # print("y", self.y)
         # print("global max reward", self.global_reward_max)
@@ -509,7 +513,7 @@ class MetalearnOptimizer(AbstractOptimizer):
         # gradient clipping to prevent exploding gradient
         nn.utils.clip_grad_norm_(self.controller.parameters(), CLIP_GRAD)
 
-        grad_norm = 0.
+        grad_norm = 0.0
         for name, params in self.controller.named_parameters():
             if params.grad is not None:
                 param_norm = params.grad.data.norm(2)

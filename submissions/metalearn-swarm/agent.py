@@ -1,57 +1,136 @@
 """Metalearn Agent."""
 
+from typing import List, NamedTuple, Any, Union
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributions as D
 
 
+Array = Union[torch.Tensor, np.ndarray]
+
+
 class Agent(nn.Module):
     """A single metalearning agent."""
 
-    def __init__(self, input_size, hidden_size, n_actions):
-        super(MetaLearnAgent, self).__init__()
+    def __init__(self, n_actions, hidden_size):
+        super(Agent, self).__init__()
 
         self.hidden_size = hidden_size
         self.n_actions = n_actions
+
         # input is observation is composed of:
-        # - the hyperparameter setting anchors of the same dimensionality as
-        #   n_actions, then the agents
-        # - the agent's actions, which is a value centered around 0 with a
-        #   range of -1 and 1, which are added to the anchors for env
-        #   evaluation
+        # - hyperparameter anchors of the same dim as n_actions
+        # - the agent's actions with range (-1, 1)
         # - the scalar reward
         self.input_size = (n_actions * 2) + 1
 
-        self.encoder = nn.Linear(self.input_size, hidden_size)
+        self.encoder = nn.Sequential(
+            nn.Linear(self.input_size, hidden_size), nn.LayerNorm(hidden_size),
+        )
         self.critic = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size), nn.Linear(hidden_size, 1),
+            nn.Linear(hidden_size, hidden_size),
+            nn.LayerNorm(hidden_size),
+            nn.Linear(hidden_size, 1),
         )
 
-        self.mu = nn.Sequential(nn.Linear(hidden_size, n_actions), nn.Tanh())
-        self.sigma = nn.Sequential(
-            nn.Linear(hidden_size, n_actions), nn.Softplus()
+        self.mu = nn.Sequential(
+            nn.Linear(hidden_size, n_actions),
+            nn.LayerNorm(n_actions),
+            nn.Tanh(),
         )
-        self.distribution = D.MultivariateNormal
+        self.cov_factor = nn.Sequential(
+            nn.Linear(hidden_size, n_actions),
+            nn.LayerNorm(n_actions),
+            nn.Hardsigmoid(),
+        )
+        self.cov_diag = nn.Sequential(
+            nn.Linear(hidden_size, n_actions),
+            nn.LayerNorm(n_actions),
+            nn.Hardsigmoid(),
+        )
+        self.distribution = D.LowRankMultivariateNormal
+        # self.distribution = D.MultivariateNormal
+        self.memory = Memory()
 
     def forward(self, obs, prev_actions, prev_reward):
         encoded = self.encoder(torch.cat([obs, prev_actions, prev_reward]))
         actions, log_probs, entropy = self.act(encoded)
-        value = self.critic(encoded)
+        value = self.critic(encoded)[0]
+        self.memory.record(actions, obs + actions, log_probs, entropy, value)
         return actions, log_probs, entropy, value
 
     def act(self, encoded):
         prob_dist = self.distribution(
-            self.mu(encoded), self.sigma(encoded).diag(),
+            self.mu(encoded) * 0.5,
+            self.cov_diag(encoded).view(-1, 1),
+            self.cov_factor(encoded),
         )
         actions = prob_dist.rsample()
-        return actions, prob_dist.log_prob(actions), prob_dist.entropy()
 
-    def update(self):
-        pass
+        log_probs = prob_dist.log_prob(actions)
+        if torch.isnan(log_probs):
+            import ipdb
+
+            ipdb.set_trace()
+        return actions, log_probs, prob_dist.entropy()
+
+    def update(self, rewards, entropy_coef=0.0):
+        advantage = rewards - torch.stack(self.memory.values)
+        actor_loss = torch.stack(self.memory.log_probs) * advantage
+        critic_loss = 0.5 * advantage ** 2
+        entropy_loss = torch.stack(self.memory.entropies) * entropy_coef
+        loss = actor_loss.mean() + critic_loss.mean() - entropy_loss.mean()
+        print(loss)
+        if torch.isnan(loss):
+            import ipdb
+
+            ipdb.set_trace()
+        return loss, self.memory.detach()
+
+
+class Memory(NamedTuple):
+    actions: List[List[Array]] = []
+    adjusted_obs: List[List[Array]] = []
+    log_probs: List[Array] = []
+    entropies: List[Array] = []
+    values: List[Array] = []
+
+    def record(self, action, adjusted_obs, log_probs, entropy, value):
+        self.actions.append(action)
+        self.adjusted_obs.append(adjusted_obs)
+        self.log_probs.append(log_probs)
+        self.entropies.append(entropy)
+        self.values.append(value)
+
+    def erase(self):
+        del self.actions[:]
+        del self.adjusted_obs[:]
+        del self.log_probs[:]
+        del self.entropies[:]
+        del self.values[:]
+
+    def detach(self):
+        memory = Memory(
+            *(
+                [x.detach().numpy() for x in mem_list]
+                for mem_list in (
+                    self.actions,
+                    self.adjusted_obs,
+                    self.log_probs,
+                    self.entropies,
+                    self.values,
+                )
+            )
+        )
+        self.erase()
+        return memory
 
 
 if __name__ == "__main__":
+    # TODO: turn this into a set of unit test
     from typing import Any, List, Dict
     import numpy as np
 
@@ -82,6 +161,10 @@ if __name__ == "__main__":
             if config["type"] == "int"
             else np.random.uniform(min_val, max_val)
             if config["type"] == "real"
+            else np.random.choice([0, 1])
+            if config["type"] == "bool"
+            else np.random.choice(config["values"])
+            if config["type"] == "cat"
             else None
         )
         if choice is None:
@@ -95,7 +178,7 @@ if __name__ == "__main__":
     init_reward = torch.tensor([0]).float()
 
     # create agent and optimizer
-    agent = Agent(input_size=3, hidden_size=5, n_actions=len(api_config))
+    agent = Agent(n_actions=len(api_config), hidden_size=5)
     optim = torch.optim.Adam(agent.parameters(), lr=0.1, weight_decay=0.1)
 
     # one forward pass
@@ -140,38 +223,3 @@ if __name__ == "__main__":
 
     print(f"grad norm: {grad_norm}")
     optim.step()
-
-    # TODO:
-    # - move optimization logic to optimizer.py
-    # - implement basic logic for generating suggestions:
-    #   - for each suggestion batch, generate n random initial points
-    #   - for each initial point, the agent generates m action adjustments as
-    #     a function of the hyperparameter values, the previous adjustments,
-    #     and the previous reward.
-    #   - this procedure results in n x m candidates
-    #   - rank them based on predicted value, and select top n_suggestions
-    #   - update controller based on rewards of the selected candidates
-    #
-    # - implement swarm logic for generating suggestions:
-    #   - create a local agent for each of n randomly initialized points
-    #   - global agent is a metalearning agent that determines which
-    #     candidate to select from the m actions for each of n agents.
-    #   - given the suggestion, anchor observation and adjustment action,
-    #     this global agent produces an estimate of the value and a probability
-    #     between 0 and 1 to decide whether or not to include the candidate.
-    #   - vanilla version can be a FFN that produces estimates sequentially,
-    #     until n_suggestions have been generated.
-    #   - the metalearning version would be an RNN that processes the rewards
-    #     that decodes the rewards and actions, stopping when n_suggestions
-    #     have been generated.
-    #   - critic loss function would be reward - value estimate error
-    #   - actor loss function would be log probability of "select candidate"
-    #     action.
-    #   - crazy idea: maybe use the global agent to further train the local
-    #     agents by feeding them the reward estimates as the reward for
-    #     those candidates that were not selected. This could potentially
-    #     introduce a lot of bias into the system if the global agent's value
-    #     estimates are really off.
-    #
-    # - idea: to "refresh" the random initial points, every t turns randomly
-    #   perturb them.

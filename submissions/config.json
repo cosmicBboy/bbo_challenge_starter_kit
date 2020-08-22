@@ -1,7 +1,12 @@
 {
     "metalearn-swarm": [
         "metalearn-swarm/optimizer.py",
-        {}
+        {
+            "learning_rate": 0.00003,
+            "weight_decay": 100.0,
+            "clip_grad": 1.0,
+            "entropy_coef": 0.0
+        }
     ],
     "metalearn-base": [
         "metalearn/optimizer.py",
