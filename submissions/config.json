@@ -1,6 +1,6 @@
 {
-    "metalearn-swarm": [
-        "metalearn-swarm/optimizer.py",
+    "swarm": [
+        "swarm/optimizer.py",
         {
             "hidden_size": 64,
             "learning_rate": 0.03,

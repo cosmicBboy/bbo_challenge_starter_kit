@@ -110,8 +110,8 @@ def compute_grad_norm(agent):
     return grad_norm
 
 
-class MetaLearnSwarmOptimizer(AbstractOptimizer):
-    primary_import = "meta-ml"
+class SwarmOptimizer(AbstractOptimizer):
+    primary_import = None
 
     def __init__(
         self,
@@ -277,4 +277,4 @@ class MetaLearnSwarmOptimizer(AbstractOptimizer):
 
 
 if __name__ == "__main__":
-    experiment_main(MetaLearnSwarmOptimizer)
+    experiment_main(SwarmOptimizer)

@@ -12,18 +12,18 @@ N_BATCH=8
 # N_BATCH=1
 
 # Input args
-CODE_DIR=$1
+SUBMISSION_DIR=$1
 N_REPEAT=$2
 
 # Where output goes
 DB_ROOT=./output
-DBID=run_$(date +"%Y%m%d_%H%M%S")
+DBID=run_submission
 
 # Setup vars
-OPT=$(basename $CODE_DIR)
-OPT_ROOT=$(dirname $CODE_DIR)
+OPT=$SUBMISSION_DIR
+OPT_ROOT=.
 
-echo $OPT $OPT_ROOT
+echo $OPT
 
 # Check that bayesmark is installed in this environment
 which bayesmark-init
