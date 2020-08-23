@@ -1,5 +1,5 @@
 from copy import deepcopy
-from typing import List, NamedTuple, Any, Union
+from typing import Dict, List, NamedTuple, Any, Union
 
 import numpy as np
 import scipy.stats as ss
@@ -13,52 +13,59 @@ from bayesmark.experiment import experiment_main
 
 
 Array = Union[torch.Tensor, np.ndarray]
+Hyperparameter = Union[int, float, str]
 
 
 class History(NamedTuple):
     memories: List[Memory] = []
+    observations: List[Dict[str, Any]] = []
     outcomes: List[List[float]] = []
     rewards: List[List[float]] = []
 
-    def record(self, memory, outcomes, rewards):
+    def record(self, memory, observations, outcomes, rewards):
         self.memories.append(deepcopy(memory))
+        self.observations.append(deepcopy(observations))
         self.outcomes.append(deepcopy(outcomes))
         self.rewards.append(deepcopy(rewards))
 
     def recall(self, n_actions):
-        prev_actions = torch.from_numpy(
-            self.memories[-1].actions[-1]
-            if self.memories
-            # initial action
-            else np.array([0 for _ in range(n_actions)])
-        ).float()
-
-        prev_reward = torch.from_numpy(
-            np.mean(self.rewards[-1], keepdims=True)
+        # get actions, reward, and observation with best outcome
+        best_idx = (
+            self.rewards[-1].index(max(self.rewards[-1]))
             if self.rewards
-            # initial reward
-            else np.array([0])
-        ).float()
-        return prev_actions, prev_reward
+            else None
+        )
+
+        if best_idx is None:
+            prev_actions = np.array([0 for _ in range(n_actions)])
+            prev_reward = np.array([0])
+        else:
+            prev_actions = self.memories[-1].actions[best_idx]
+            prev_reward = np.array([self.rewards[-1][best_idx]])
+
+        return (
+            torch.from_numpy(prev_actions).float(),
+            torch.from_numpy(prev_reward).float(),
+        )
 
     def erase(self):
         del self.memories[:]
+        del self.observations[:]
         del self.outcomes[:]
         del self.rewards[:]
 
 
 def sample_random_actions(api_config):
-    random_actions: List = []
+    random_actions: List[Hyperparameter] = []
     for param, config in api_config.items():
-        min_val, max_val = config["range"]
         choice = (
-            np.random.randint(min_val, max_val + 1)
+            np.random.randint(*config["range"])
             if config["type"] == "int"
-            else np.random.uniform(min_val, max_val)
+            else np.random.uniform(*config["range"])
             if config["type"] == "real"
             else np.random.choice([0, 1])
             if config["type"] == "bool"
-            else np.random.choice(config["values"])
+            else np.random.randint(0, len(config["values"]))
             if config["type"] == "cat"
             else None
         )
@@ -109,10 +116,12 @@ class MetaLearnSwarmOptimizer(AbstractOptimizer):
     def __init__(
         self,
         api_config,
-        learning_rate=0.1,
-        weight_decay=0.1,
-        entropy_coef=0.1,
-        clip_grad=10.0,
+        hidden_size=64,
+        learning_rate=0.03,
+        weight_decay=1.0,
+        entropy_coef=0.0,
+        clip_grad=1.0,
+        resample_tolerance=4,
     ):
         """Build wrapper class to use optimizer in benchmark.
 
@@ -127,23 +136,25 @@ class MetaLearnSwarmOptimizer(AbstractOptimizer):
         self.weight_decay = weight_decay
         self.entropy_coef = entropy_coef
         self.clip_grad = clip_grad
-
-        # initialize anchor points
-        self.anchor = sample_random_actions(api_config)
+        self.resample_tolerance = resample_tolerance
 
         # initial conditions
-        self.init_obs = np.array(self.anchor)
+        self.anchor_point = np.array(sample_random_actions(api_config))
         self.init_reward = np.array([0])
 
         # instantiate agents
         self.n_actions = len(api_config)
-        self.agent = Agent(self.n_actions, hidden_size=5)
+        self.agent = Agent(self.n_actions, hidden_size=hidden_size)
         self.optim = torch.optim.Adam(
             self.agent.parameters(),
             lr=learning_rate,
             weight_decay=self.weight_decay,
         )
         self.history = History()
+        self.best_reward = float("-inf")
+
+        # counters
+        self.resample_counter = 0
 
     def suggest(self, n_suggestions=1):
         """Get suggestions from the optimizer.
@@ -167,17 +178,17 @@ class MetaLearnSwarmOptimizer(AbstractOptimizer):
             # iteration.
             self.agent.train()
 
-            obs = torch.from_numpy(self.init_obs).float()
+            prev_obs = torch.from_numpy(self.anchor_point).float()
             prev_actions, prev_reward = self.history.recall(self.n_actions)
 
             suggestions = []
             for i in range(n_suggestions):
                 actions, log_probs, entropy, value = self.agent(
-                    obs, prev_actions, prev_reward
+                    prev_obs, prev_actions, prev_reward
                 )
-                adjusted_obs = obs + actions
+                adjusted_obs = prev_obs + actions
                 suggestions.append(self.make_suggestion(adjusted_obs))
-                obs, prev_actions = adjusted_obs, actions
+                prev_actions = actions
 
             return suggestions
         except Exception as e:
@@ -208,16 +219,25 @@ class MetaLearnSwarmOptimizer(AbstractOptimizer):
             grad_norm = compute_grad_norm(self.agent)
             self.optim.step()
 
-            if np.isnan(grad_norm):
-                pass
-                # import ipdb
+            # resample anchor point if best reward hasn't increased
+            if rewards.max() > self.best_reward:
+                self.best_reward = rewards.max()
+                self.resample_counter = 0
+            else:
+                self.resample_counter += 1
 
-                # ipdb.set_trace()
+            if self.resample_counter >= self.resample_tolerance:
+                print("[resetting anchor point]")
+                self.best_reward = float("-inf")
+                self.anchor_point = np.array(
+                    sample_random_actions(self.api_config)
+                )
 
             print(
                 {
                     "mean_y": f"{np.mean(y):0.04f}",
-                    "mean_reward": f"{rewards.mean():0.04f}",
+                    "max_reward": f"{rewards.max():0.04f}",
+                    "best_reward": f"{self.best_reward:0.04f}",
                     "loss": f"{loss.detach().item():0.04f}",
                     "grad_norm": f"{grad_norm:0.04f}",
                 },
@@ -226,23 +246,33 @@ class MetaLearnSwarmOptimizer(AbstractOptimizer):
         except Exception as e:
             print(e)
         finally:
-            self.history.record(memory, y, rewards.tolist())
-            self.agent.erase()
+            self.history.record(memory, X, y, rewards.tolist())
 
     def make_suggestion(self, adjusted_obs):
         suggestion = {}
         for setting, (param, config) in zip(
             adjusted_obs, self.api_config.items()
         ):
-            min_val, max_val = config["range"]
+            if config["type"] == "bool":
+                min_val, max_val = 0, 1
+            elif config["type"] == "cat":
+                min_val, max_val = 0, len(config["values"]) - 1
+            else:
+                min_val, max_val = config["range"]
+
+            # make sure setting is within bounds
             setting = (
                 max(min_val, setting.detach().item())
                 if setting < min_val
                 else min(max_val, setting.detach().item())
             )
-            if config["type"] == "int":
+
+            if config["type"] in {"bool", "int"}:
                 setting = int(setting)
+            elif config["type"] == "cat":
+                setting = config["values"][int(setting)]
             suggestion[param] = setting
+
         return suggestion
 
 

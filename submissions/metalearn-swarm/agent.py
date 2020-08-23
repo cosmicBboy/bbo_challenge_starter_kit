@@ -30,12 +30,14 @@ class Agent(nn.Module):
         self.encoder = nn.Sequential(
             nn.Linear(self.input_size, hidden_size), nn.LayerNorm(hidden_size),
         )
+
         self.critic = nn.Sequential(
             nn.Linear(hidden_size, hidden_size),
             nn.LayerNorm(hidden_size),
             nn.Linear(hidden_size, 1),
         )
 
+        # policy parameter layers
         self.mu = nn.Sequential(
             nn.Linear(hidden_size, n_actions),
             nn.LayerNorm(n_actions),
@@ -71,10 +73,6 @@ class Agent(nn.Module):
         actions = prob_dist.rsample()
 
         log_probs = prob_dist.log_prob(actions)
-        if torch.isnan(log_probs):
-            import ipdb
-
-            ipdb.set_trace()
         return actions, log_probs, prob_dist.entropy()
 
     def update(self, rewards, entropy_coef=0.0):
@@ -83,11 +81,6 @@ class Agent(nn.Module):
         critic_loss = 0.5 * advantage ** 2
         entropy_loss = torch.stack(self.memory.entropies) * entropy_coef
         loss = actor_loss.mean() + critic_loss.mean() - entropy_loss.mean()
-        print(loss)
-        if torch.isnan(loss):
-            import ipdb
-
-            ipdb.set_trace()
         return loss, self.memory.detach()
 
 
@@ -131,7 +124,7 @@ class Memory(NamedTuple):
 
 if __name__ == "__main__":
     # TODO: turn this into a set of unit test
-    from typing import Any, List, Dict
+    from typing import Dict
     import numpy as np
 
     np.random.seed(1001)
