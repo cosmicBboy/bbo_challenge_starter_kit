@@ -1,6 +1,7 @@
 """Metalearn Agent."""
 
-from typing import List, NamedTuple, Any, Union
+from copy import copy
+from typing import List, Any, Union
 
 import numpy as np
 import torch
@@ -8,72 +9,128 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributions as D
 
+from custom_typing import Array
 
-Array = Union[torch.Tensor, np.ndarray]
+
+def fill_tril_2d_square(fill, values):
+    n = fill.shape[0]
+    indices = torch.tril_indices(n, n, -1)
+    assert len(values) == indices.shape[1]
+    for idx in range(indices.shape[1]):
+        i, j = indices[:, idx]
+        fill[i, j] = values[idx]
+    return fill
 
 
 class Agent(nn.Module):
     """A single metalearning agent."""
 
-    def __init__(self, n_actions, hidden_size):
+    def __init__(
+        self,
+        n_actions,
+        hidden_size,
+        dropout=0.01,
+    ):
         super(Agent, self).__init__()
 
         self.hidden_size = hidden_size
         self.n_actions = n_actions
+        self.dropout = dropout
 
         # input is observation is composed of:
         # - hyperparameter anchors of the same dim as n_actions
         # - the agent's actions with range (-1, 1)
         # - the scalar reward
-        self.input_size = (n_actions * 2) + 1
-
         self.encoder = nn.Sequential(
-            nn.Linear(self.input_size, hidden_size), nn.LayerNorm(hidden_size),
+            nn.Linear(n_actions, hidden_size),
+            nn.Dropout(dropout),
+            nn.LayerNorm(hidden_size),
         )
 
+        # TODO: use gaussian process model as the critic
         self.critic = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size),
+            nn.Linear(hidden_size + (n_actions * 3), hidden_size),
+            nn.Dropout(dropout),
             nn.LayerNorm(hidden_size),
             nn.Linear(hidden_size, 1),
         )
 
         # policy parameter layers
-        self.mu = nn.Sequential(
-            nn.Linear(hidden_size, n_actions),
-            nn.LayerNorm(n_actions),
-            nn.Tanh(),
-        )
+        # self.cov = nn.Sequential(
+        #     nn.Linear(hidden_size, n_actions),
+        #     nn.Dropout(dropout),
+        #     nn.LayerNorm(n_actions),
+        #     nn.Hardsigmoid(),
+        # )
+        # self.cov_scaler = nn.Sequential(
+        #     nn.Linear(hidden_size, n_actions),
+        #     nn.Dropout(dropout),
+        #     nn.LayerNorm(n_actions),
+        #     nn.Hardsigmoid(),
+        # )
+        # self.distribution = D.MultivariateNormal
         self.cov_factor = nn.Sequential(
             nn.Linear(hidden_size, n_actions),
+            nn.Dropout(dropout),
             nn.LayerNorm(n_actions),
             nn.Hardsigmoid(),
         )
         self.cov_diag = nn.Sequential(
             nn.Linear(hidden_size, n_actions),
+            nn.Dropout(dropout),
             nn.LayerNorm(n_actions),
             nn.Hardsigmoid(),
         )
+
         self.distribution = D.LowRankMultivariateNormal
-        # self.distribution = D.MultivariateNormal
         self.memory = Memory()
 
-    def forward(self, obs, prev_actions, prev_reward):
-        encoded = self.encoder(torch.cat([obs, prev_actions, prev_reward]))
-        actions, log_probs, entropy = self.act(encoded)
-        value = self.critic(encoded)[0]
-        self.memory.record(actions, obs + actions, log_probs, entropy, value)
-        return actions, log_probs, entropy, value
+    def forward(self, obs, cov_scaler=1.0):
+        # TODO: idea - explicitly model the distance between obs and actions
+        # when producing value estimate
+        encoded = self.encoder(obs)
+        actions, log_probs, entropy, prob_dist = self.act(encoded)
+        actions *= cov_scaler
+        adjusted_obs = torch.clamp(obs + actions, 0, 1)
+        value = self.critic(
+            torch.cat([encoded, actions, obs, adjusted_obs])
+        )[0]
+        self.memory.record(
+            obs, actions, adjusted_obs, log_probs, entropy, value, prob_dist
+        )
+        return actions, adjusted_obs, log_probs, entropy, value, prob_dist
+
+    def prob_dist(self, encoded):
+        return self.distribution(
+            torch.zeros(self.n_actions),
+            self.cov_factor(encoded).view(-1, 1),
+            self.cov_diag(encoded),
+        )
 
     def act(self, encoded):
-        prob_dist = self.distribution(
-            self.mu(encoded) * 0.5,
-            self.cov_diag(encoded).view(-1, 1),
-            self.cov_factor(encoded),
-        )
+        prob_dist = self.prob_dist(encoded)
         actions = prob_dist.rsample()
-
         log_probs = prob_dist.log_prob(actions)
-        return actions, log_probs, prob_dist.entropy()
+        return actions, log_probs, prob_dist.entropy(), prob_dist
+
+    def evaluate_actions(self, obs, actions):
+        encoded = self.encoder(obs)
+        adjusted_obs = torch.clamp(obs + actions, 0, 1)
+        value = self.critic(
+            torch.cat([encoded, actions, obs, adjusted_obs])
+        )[0]
+        return value
+
+    def evaluate_experiences(self, obs, actions):
+        """Policy and critic evaluates past actions."""
+        encoded = self.encoder(obs)
+        prob_dist = self.prob_dist(encoded)
+        log_probs = prob_dist.log_prob(actions)
+        adjusted_obs = torch.clamp(obs + actions, 0, 1)
+        value = self.critic(
+            torch.cat([encoded, actions, obs, adjusted_obs])
+        )[0]
+        return value, log_probs, prob_dist.entropy()
 
     def update(self, rewards, entropy_coef=0.0):
         advantage = rewards - torch.stack(self.memory.values)
@@ -84,39 +141,75 @@ class Agent(nn.Module):
         return loss, self.memory.detach()
 
 
-class Memory(NamedTuple):
-    actions: List[List[Array]] = []
-    adjusted_obs: List[List[Array]] = []
-    log_probs: List[Array] = []
-    entropies: List[Array] = []
-    values: List[Array] = []
+class Memory:
+    def __init__(
+        self,
+        obs=None,
+        actions=None,
+        adjusted_obs=None,
+        log_probs=None,
+        entropies=None,
+        values=None,
+        prob_dists=None,
+    ):
+        self.obs: List[List[Array]] = [] if obs is None else obs
+        self.actions: List[List[Array]] = [] if actions is None else actions
+        self.adjusted_obs: List[
+            List[Array]
+        ] = [] if adjusted_obs is None else adjusted_obs
+        self.log_probs: List[Array] = [] if log_probs is None else log_probs
+        self.entropies: List[Array] = [] if entropies is None else entropies
+        self.values: List[Array] = [] if values is None else values
+        self.prob_dists: List[Array] = [] if prob_dists is None else prob_dists
 
-    def record(self, action, adjusted_obs, log_probs, entropy, value):
+    def items(self):
+        return {
+            "obs": self.obs,
+            "actions": self.actions,
+            "adjusted_obs": self.adjusted_obs,
+            "log_probs": self.log_probs,
+            "entropies": self.entropies,
+            "values": self.values,
+            "prob_dists": [copy(x) for x in self.prob_dists],
+        }.items()
+
+    def record(
+        self, obs, action, adjusted_obs, log_probs, entropy, value, prob_dists
+    ):
+        self.obs.append(obs)
         self.actions.append(action)
         self.adjusted_obs.append(adjusted_obs)
         self.log_probs.append(log_probs)
         self.entropies.append(entropy)
         self.values.append(value)
+        self.prob_dists.append(prob_dists)
 
     def erase(self):
+        del self.obs[:]
         del self.actions[:]
         del self.adjusted_obs[:]
         del self.log_probs[:]
         del self.entropies[:]
         del self.values[:]
+        del self.prob_dists[:]
 
     def detach(self):
         memory = Memory(
-            *(
-                [x.detach().numpy() for x in mem_list]
+            *[
+                [
+                    x if isinstance(x, np.ndarray)
+                    else x.detach().numpy() for x in mem_list
+                ]
                 for mem_list in (
+                    self.obs,
                     self.actions,
                     self.adjusted_obs,
                     self.log_probs,
                     self.entropies,
                     self.values,
                 )
-            )
+                if mem_list is not None
+            ] + [self.prob_dists]
         )
         self.erase()
         return memory

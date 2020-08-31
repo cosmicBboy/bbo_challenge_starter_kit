@@ -41,10 +41,25 @@ cp ./input/baseline-$N_STEP-$N_BATCH.json $DB_ROOT/$DBID/derived/baseline.json
 # By default, runs on all models (-c), data (-d), metrics (-m)
 # bayesmark-launch -dir $DB_ROOT -b $DBID -n $N_STEP -r $N_REPEAT -p $N_BATCH -o $OPT --opt-root $OPT_ROOT -v -c SVM DT -d boston digits
 # To run on all problems use instead (slower):
-bayesmark-launch -dir $DB_ROOT -b $DBID -n $N_STEP -r $N_REPEAT -p $N_BATCH -o $OPT --opt-root $OPT_ROOT -v
+# bayesmark-launch \
+#     -dir $DB_ROOT -b $DBID -n $N_STEP -r $N_REPEAT -p $N_BATCH -o $OPT \
+#     --opt-root $OPT_ROOT -v \
+#     --uuid 2aefe46705d94924b283a3c60767d6ee
 
-# bayesmark-launch -dir $DB_ROOT -b $DBID -n $N_STEP -r $N_REPEAT -p $N_BATCH -o $OPT --opt-root $OPT_ROOT -v -c lasso -d boston -m mae
-# bayesmark-launch -dir $DB_ROOT -b $DBID -n $N_STEP -r $N_REPEAT -p $N_BATCH -o $OPT --opt-root $OPT_ROOT -c DT -d boston -m acc mse -v
+# bayesmark-launch \
+#     -dir $DB_ROOT -b $DBID -n $N_STEP -r $N_REPEAT -p $N_BATCH -o $OPT \
+#     --opt-root $OPT_ROOT -v -c DT -d digits boston -m acc nll mae mse \
+#     --uuid 6505a7e555754367b516efefa70315f5
+
+bayesmark-launch \
+    -dir $DB_ROOT -b $DBID -n $N_STEP -r $N_REPEAT -p $N_BATCH -o $OPT \
+    --opt-root $OPT_ROOT -v -c DT -d boston digits -m mae mse nll acc \
+    --uuid 6505a7e555754367b516efefa70315f5
+
+# bayesmark-launch \
+#     -dir $DB_ROOT -b $DBID -n $N_STEP -r $N_REPEAT -p $N_BATCH -o $OPT \
+#     --opt-root $OPT_ROOT -v -c linear -d boston digits -m acc mse mae \
+#     --uuid 03be344a1e424d0e98280a719ff2eb7e
 
 # Now aggregate the results
 bayesmark-agg -dir $DB_ROOT -b $DBID

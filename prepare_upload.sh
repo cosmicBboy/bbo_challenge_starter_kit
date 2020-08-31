@@ -3,8 +3,6 @@
 set -ex
 set -o pipefail
 
-mkdir -p ./upload
-
 # Input args
 CODE_DIR=$1
 
@@ -14,7 +12,7 @@ NAME=upload_$(basename $CODE_DIR)
 CODE_DIR=$(dirname $CODE_DIR)/$(basename $CODE_DIR)
 
 # Copy in provided files
-cp -r -n $CODE_DIR ./upload/$NAME
+cp -r -n $CODE_DIR ./$NAME
 
 # Make a blank req file if none provided
 REQ_FILE=./$NAME/requirements.txt
