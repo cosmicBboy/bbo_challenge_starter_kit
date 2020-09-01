@@ -51,10 +51,18 @@ cp ./input/baseline-$N_STEP-$N_BATCH.json $DB_ROOT/$DBID/derived/baseline.json
 #     --opt-root $OPT_ROOT -v \
 #     --uuid 6505a7e555754367b516efefa70315f5
 
+# bayesmark-launch \
+#     -dir $DB_ROOT -b $DBID -n $N_STEP -r $N_REPEAT -p $N_BATCH -o $OPT \
+#     --opt-root $OPT_ROOT -v -c DT -d boston digits -m mae mse nll acc \
+#     --uuid 6505a7e555754367b516efefa70315f5
+
 bayesmark-launch \
     -dir $DB_ROOT -b $DBID -n $N_STEP -r $N_REPEAT -p $N_BATCH -o $OPT \
-    --opt-root $OPT_ROOT -v -c DT -d boston digits -m mae mse nll acc \
-    --uuid 6505a7e555754367b516efefa70315f5
+    --opt-root $OPT_ROOT -v -c DT -d diabetes -m mse
+
+# bayesmark-launch \
+#     -dir $DB_ROOT -b $DBID -n $N_STEP -r $N_REPEAT -p $N_BATCH -o $OPT \
+#     --opt-root $OPT_ROOT -v -c MLP-sgd -d boston digits -m acc mse mae nll
 
 # bayesmark-launch -dir $DB_ROOT -b $DBID -n $N_STEP -r $N_REPEAT -p $N_BATCH -o $OPT --opt-root $OPT_ROOT -v -c DT -d boston digits -m acc mse mae
 

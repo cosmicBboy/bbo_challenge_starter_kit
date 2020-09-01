@@ -6,8 +6,21 @@
             "n_per_agent": 20,
             "hidden_size": 32,
             "dropout": 0.01,
-            "learning_rate": 0.03,
-            "weight_decay": 0.1,
+            "learning_rate": 0.003,
+            "weight_decay": 1.0,
+            "entropy_coef": 0.01,
+            "clip_grad": 1.0
+        }
+    ],
+    "swarm-01": [
+        "swarm/optimizer.py",
+        {
+            "n_agents": 1,
+            "n_per_agent": 20,
+            "hidden_size": 128,
+            "dropout": 0.01,
+            "learning_rate": 0.003,
+            "weight_decay": 1.0,
             "entropy_coef": 0.01,
             "clip_grad": 1.0
         }

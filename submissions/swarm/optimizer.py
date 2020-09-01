@@ -37,8 +37,8 @@ class SwarmOptimizer(AbstractOptimizer):
         n_per_agent=20,
         hidden_size=32,
         dropout=0.01,
-        learning_rate=0.03,
-        weight_decay=0.1,
+        learning_rate=0.003,
+        weight_decay=1.0,
         entropy_coef=0.01,
         clip_grad=1.0,
         success_threshold=0,
@@ -131,8 +131,7 @@ class SwarmOptimizer(AbstractOptimizer):
             )
             # make sure suggestions are within bounds
             suggestions = from_unit_cube(
-                suggestions.detach().numpy(),
-                self.lb, self.ub
+                suggestions.detach().numpy(), self.lb, self.ub
             )
             suggestions = self.space_x.unwarp(suggestions)
             return suggestions
@@ -154,12 +153,15 @@ class SwarmOptimizer(AbstractOptimizer):
         try:
             self.swarm.optim.zero_grad()
             loss = self.swarm.update(y, self.entropy_coef)
+            if loss is None:
+                return
+
             loss.backward()
 
             grad_norm = 0.0
             print(
                 "[selected agents]",
-                self.swarm.history.collective_memories[-1].agent_index
+                self.swarm.history.collective_memories[-1].agent_index,
             )
             # TODO: should clip gradients for all agents since they are also
             # evaluating the value of actions off-policy

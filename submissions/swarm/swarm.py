@@ -37,14 +37,12 @@ class Swarm:
         anchor_fn,
         optim,
         optim_config,
-        kappa=1.0,
         success_threshold=3,
         failure_tolerance=4,
     ):
         self.n_agents = n_agents
         self.n_actions = agent_config["n_actions"]
         self.anchor_fn = anchor_fn
-        self.kappa = kappa
         self.success_threshold = success_threshold
         self.failure_tolerance = failure_tolerance
 
@@ -70,14 +68,6 @@ class Swarm:
         self.best_reward = None
         self.best_y = None
 
-        # TODO:
-        # - normalize rewards such that if rewards > 0, log-transform before
-        #   negating
-        # - experience replay: keep a buffer of n worst and n best obs, actions
-        #   and rewards. Every update, include an off-policy evaluation of
-        #   these data points per agent to re-inforce actions that led to
-        #   best results and discourage actions that led to worst results
-
     def init_suggestions(self, batch_size):
         """Initial suggestion using random points."""
         init_obs = [
@@ -86,25 +76,32 @@ class Swarm:
         ]
         init_actions = [torch.zeros(self.n_actions) for _ in range(batch_size)]
 
-        evaluator_estimates = defaultdict(list)
-        for obs, action in zip(init_obs, init_actions):
-            local_evaluator_estimates = defaultdict(list)
-            for local_agent in self.local_agents:
-                local_evaluator_estimates["values"].append(
-                    local_agent.agent.evaluate_actions(obs, action)
-                )
-            for k, v in local_evaluator_estimates.items():
-                evaluator_estimates[k].append(v)
-
+        # initial actions attributed to 0th agent to start
         self.init_obs = init_obs
-        self.init_collective_estimates = torch.stack(
-            [torch.stack(x) for x in evaluator_estimates["values"]]
-        )
+        self.init_actions = init_actions
+        self.init_agent_index = [0 for _ in range(len(self.init_obs))]
         return init_obs
 
     def init_update(self, y, rewards, entropy_coef):
-        advantage = rewards.view(-1, 1) - self.init_collective_estimates
-        loss = (0.5 * advantage ** 2).mean()
+        for i, local_agent in enumerate(self.local_agents):
+            # update GP
+            experiences = defaultdict(list)
+            for obs, action, agent_index, reward in zip(
+                self.init_obs,
+                self.init_actions,
+                self.init_agent_index,
+                rewards,
+            ):
+                if i == agent_index:
+                    experiences["obs"].append(obs)
+                    experiences["actions"].append(action)
+                    experiences["rewards"].append(reward)
+
+            local_agent.agent.update_gp(
+                torch.stack(experiences["obs"]),
+                torch.stack(experiences["actions"]),
+                torch.stack(experiences["rewards"]),
+            )
 
         best_idx = torch.argmax(rewards).item()
         self.best_reward = rewards[best_idx].item()
@@ -121,11 +118,16 @@ class Swarm:
                         for _ in range(len(self.init_obs))
                     ],
                     adjusted_obs=self.init_obs,
-                )
+                ),
             ).detach(),
-            y
+            y,
         )
-        return loss
+        return None
+
+    @property
+    def cov_scaler(self):
+        # return 1
+        return 1 / (self.n_successes + 1)
 
     def __call__(self, batch_size, n_per_agent=10):
         # TODO: enable off-policy learning by having evaluator agents generate
@@ -137,7 +139,7 @@ class Swarm:
             return self.init_suggestions(batch_size)
 
         # cov_scaler = 1.0
-        cov_scaler = 1 / (self.n_successes + 1)
+        cov_scaler = self.cov_scaler
         print(f"[cov scaler] {cov_scaler}")
 
         suggestions = []
@@ -148,10 +150,11 @@ class Swarm:
             proposer_estimates = defaultdict(list)
             for i, local_agent in enumerate(self.local_agents):
                 agent_index.extend([i for _ in range(n_per_agent)])
-                agent_candidates, agent_actions = (
-                    local_agent.create_candidates(
-                        self.best_obs, n_per_agent, cov_scaler
-                    )
+                (
+                    agent_candidates,
+                    agent_actions,
+                ) = local_agent.create_candidates(
+                    self.best_obs, n_per_agent, cov_scaler=cov_scaler
                 )
                 candidates.extend(agent_candidates)
                 actions.extend(agent_actions)
@@ -187,26 +190,18 @@ class Swarm:
 
             # rank candidates based on highest predicted value weighted by
             # the action probability
-            weighted_values = (
-                torch.stack(proposer_estimates["values"]) *
-                torch.exp(torch.stack(proposer_estimates["log_probs"]))
-            )
+            values = torch.stack(proposer_estimates["values"]).float()
 
-            best_idx = torch.argsort(
-                weighted_values, descending=True
-            )[0].item()
+            best_idx = torch.argsort(values, descending=True)[0].item()
 
             self.collective_memory.record(
                 agent_index[best_idx],
-                *[v[best_idx] for _, v in proposer_estimates.items()] + [
-                    collective_values[best_idx]
-                ]
+                *[v[best_idx] for _, v in proposer_estimates.items()]
+                + [collective_values[best_idx]],
             )
 
             suggestions.append(candidates[best_idx])
 
-        # experience replay: generate log_probs, entropy, values for all
-        # past experiences.
         return suggestions
 
     def aggregate_collective_estimates(
@@ -218,9 +213,11 @@ class Swarm:
         return torch.cat(
             [
                 torch.stack(proposer_estimates[key]).view(-1, 1) * weight,
-                torch.stack([torch.stack(x) for x in evaluator_estimates[key]])
+                torch.stack(
+                    [torch.stack(x) for x in evaluator_estimates[key]]
+                ),
             ],
-            dim=1
+            dim=1,
         ).mean(dim=1)
 
     def update(self, y, entropy_coef=0.0):
@@ -236,12 +233,22 @@ class Swarm:
         self.n_updates += 1
 
         if self.n_updates <= 1:
-            rewards = derive_reward(y, self.best_y)
+            rewards = derive_reward(y)
             return self.init_update(y, rewards, entropy_coef)
 
         replay_results = self.experience_replay()
 
         global_y = y + replay_results["outcomes"]
+        global_agent_index = (
+            self.collective_memory.agent_index + replay_results["agent_index"]
+        )
+        global_obs = self.collective_memory.memory.obs + [
+            torch.from_numpy(x).float() for x in replay_results["obs"]
+        ]
+        global_actions = [
+            x.detach() for x in self.collective_memory.memory.actions
+        ] + [torch.from_numpy(x).float() for x in replay_results["actions"]]
+
         rewards = derive_reward(global_y)
 
         # compute actor critic losses based on current and past actions
@@ -255,31 +262,33 @@ class Swarm:
             )
             * advantage
         )
-        critic_loss = 0.5 * advantage ** 2
-
-        # collective critic
-        if self.n_agents > 1:
-            collective_advantage = (
-                rewards - torch.stack(self.collective_memory.collective_values)
-            )
-            collective_critic_loss = 0.5 * collective_advantage ** 2
-        else:
-            collective_critic_loss = torch.tensor(0).float()
-
         entropy_loss = (
             torch.stack(
                 self.collective_memory.memory.entropies
                 + replay_results["entropies"]
-            ) * entropy_coef
+            )
+            * entropy_coef
         )
-        loss = (
-            actor_loss.mean()
-            + critic_loss.mean()
-            + collective_critic_loss.mean() * self.kappa
-            - entropy_loss.mean()
-        )
+        loss = actor_loss.mean() - entropy_loss.mean()
+
+        for i, local_agent in enumerate(self.local_agents):
+            experiences = defaultdict(list)
+            for obs, action, agent_index, reward in zip(
+                global_obs, global_actions, global_agent_index, rewards
+            ):
+                if i == agent_index:
+                    experiences["obs"].append(obs)
+                    experiences["actions"].append(action)
+                    experiences["rewards"].append(reward)
+
+            local_agent.agent.update_gp(
+                torch.stack(experiences["obs"]),
+                torch.stack(experiences["actions"]),
+                torch.stack(experiences["rewards"]),
+            )
 
         agent_memories = []
+
         for local_agent in self.local_agents:
             agent_memories.append(local_agent.agent.memory.detach())
 
@@ -295,29 +304,19 @@ class Swarm:
             return None
 
         replay_results = defaultdict(list)
-        agent_experiences = defaultdict(lambda: defaultdict(list))
         for agent_index, obs, action, outcome in self.history.recall():
-            agent_experiences[agent_index]["obs"].append(obs)
-            agent_experiences[agent_index]["actions"].append(action)
-            agent_experiences[agent_index]["outcomes"].append(outcome)
-
-        for agent_index, local_agent in enumerate(self.local_agents):
-            experiences = agent_experiences[agent_index]
-            for obs, action, outcome in zip(
-                experiences["obs"],
-                experiences["actions"],
-                experiences["outcomes"],
-            ):
-                value, log_probs, entropy = (
-                    local_agent.agent.evaluate_experiences(
-                        torch.from_numpy(obs).float(),
-                        torch.from_numpy(action).float(),
-                    )
-                )
-                replay_results["values"].append(value)
-                replay_results["log_probs"].append(log_probs)
-                replay_results["entropies"].append(entropy)
-                replay_results["outcomes"].append(outcome)
+            local_agent = self.local_agents[agent_index]
+            value, log_probs, entropy = local_agent.agent.evaluate_experiences(
+                torch.from_numpy(obs).float(),
+                torch.from_numpy(action).float(),
+            )
+            replay_results["obs"].append(obs)
+            replay_results["actions"].append(action)
+            replay_results["values"].append(value)
+            replay_results["log_probs"].append(log_probs)
+            replay_results["entropies"].append(entropy)
+            replay_results["outcomes"].append(outcome)
+            replay_results["agent_index"].append(agent_index)
 
         # TODO: assert that all entries in replay_results are same length
         return replay_results
@@ -334,10 +333,9 @@ class Swarm:
             print("[updating best observation]")
             self.best_reward = best_reward
             self.best_y = best_y
-            self.best_obs = (
-                self.collective_memory.memory.adjusted_obs[best_idx]
-                .detach()
-            )
+            self.best_obs = self.collective_memory.memory.adjusted_obs[
+                best_idx
+            ].detach()
             self.n_successes += 1
         else:
             self.n_failures += 1
@@ -368,8 +366,16 @@ class CollectiveMemory:
         self.collective_values = []
 
     def record(
-        self, agent_index, obs, action, adjusted_obs, log_probs, entropy,
-        value, prob_dist, collective_values
+        self,
+        agent_index,
+        obs,
+        action,
+        adjusted_obs,
+        log_probs,
+        entropy,
+        value,
+        prob_dist,
+        collective_values,
     ):
         self.agent_index.append(agent_index)
         self.memory.obs.append(obs)
@@ -449,9 +455,14 @@ class LocalAgent:
         candidates = []
         out_actions = []
         for i in range(n):
-            actions, adjusted_obs, log_probs, entropy, value, prob_dist = (
-                self.agent(obs, cov_scaler)
-            )
+            (
+                actions,
+                adjusted_obs,
+                log_probs,
+                entropy,
+                value,
+                prob_dist,
+            ) = self.agent(obs, cov_scaler)
             candidates.append(adjusted_obs)
             out_actions.append(actions)
 

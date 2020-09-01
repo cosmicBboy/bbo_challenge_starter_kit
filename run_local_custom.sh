@@ -58,8 +58,14 @@ bayesmark-launch \
 
 # bayesmark-launch \
 #     -dir $DB_ROOT -b $DBID -n $N_STEP -r $N_REPEAT -p $N_BATCH -o $OPT \
-#     --opt-root $OPT_ROOT -v -c linear -d boston digits -m acc mse mae \
+#     --opt-root $OPT_ROOT -v -c linear -d boston digits -m acc mse mae nll \
 #     --uuid 03be344a1e424d0e98280a719ff2eb7e
+
+# bayesmark-launch \
+#     -dir $DB_ROOT -b $DBID -n $N_STEP -r $N_REPEAT -p $N_BATCH -o $OPT \
+#     --opt-root $OPT_ROOT -v -c MLP-sgd -d boston digits -m acc mse mae nll
+
+# DT,MLP-adam,MLP-sgd,RF,SVM,ada,kNN,lasso,linear
 
 # Now aggregate the results
 bayesmark-agg -dir $DB_ROOT -b $DBID

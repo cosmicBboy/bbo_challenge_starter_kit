@@ -9,8 +9,6 @@ from bayesmark.abstract_optimizer import AbstractOptimizer
 from bayesmark.experiment import experiment_main
 from bayesmark.space import JointSpace
 
-from metalearn import scorers
-
 
 def order_stats(X):
     _, idx, cnt = np.unique(X, return_inverse=True, return_counts=True)
@@ -67,10 +65,14 @@ class TurboOptimizer(AbstractOptimizer):
         self.X_init = from_unit_cube(X_init, self.lb, self.ub)
 
     def suggest(self, n_suggestions=1):
-        if self.batch_size is None:  # Remember the batch size on the first call to suggest
+        if (
+            self.batch_size is None
+        ):  # Remember the batch size on the first call to suggest
             self.batch_size = n_suggestions
             self.turbo.batch_size = n_suggestions
-            self.turbo.failtol = np.ceil(np.max([4.0 / self.batch_size, self.dim / self.batch_size]))
+            self.turbo.failtol = np.ceil(
+                np.max([4.0 / self.batch_size, self.dim / self.batch_size])
+            )
             self.turbo.n_init = max([self.turbo.n_init, self.batch_size])
             self.restart()
 
@@ -80,19 +82,33 @@ class TurboOptimizer(AbstractOptimizer):
         n_init = min(len(self.X_init), n_suggestions)
         if n_init > 0:
             X_next[:n_init] = deepcopy(self.X_init[:n_init, :])
-            self.X_init = self.X_init[n_init:, :]  # Remove these pending points
+            self.X_init = self.X_init[
+                n_init:, :
+            ]  # Remove these pending points
 
         # Get remaining points from TuRBO
         n_adapt = n_suggestions - n_init
         if n_adapt > 0:
-            if len(self.turbo._X) > 0:  # Use random points if we can't fit a GP
+            if (
+                len(self.turbo._X) > 0
+            ):  # Use random points if we can't fit a GP
                 X = to_unit_cube(deepcopy(self.turbo._X), self.lb, self.ub)
-                fX = copula_standardize(deepcopy(self.turbo._fX).ravel())  # Use Copula
+                fX = copula_standardize(
+                    deepcopy(self.turbo._fX).ravel()
+                )  # Use Copula
                 X_cand, y_cand, _ = self.turbo._create_candidates(
-                    X, fX, length=self.turbo.length, n_training_steps=100, hypers={}
+                    X,
+                    fX,
+                    length=self.turbo.length,
+                    n_training_steps=100,
+                    hypers={},
                 )
-                X_next[-n_adapt:, :] = self.turbo._select_candidates(X_cand, y_cand)[:n_adapt, :]
-                X_next[-n_adapt:, :] = from_unit_cube(X_next[-n_adapt:, :], self.lb, self.ub)
+                X_next[-n_adapt:, :] = self.turbo._select_candidates(
+                    X_cand, y_cand
+                )[:n_adapt, :]
+                X_next[-n_adapt:, :] = from_unit_cube(
+                    X_next[-n_adapt:, :], self.lb, self.ub
+                )
 
         # Unwarp the suggestions
         suggestions = self.space_x.unwarp(X_next)
@@ -118,11 +134,12 @@ class TurboOptimizer(AbstractOptimizer):
         # and inf is the worst, e.g. MSE, NLL. In these cases, bound scores so
         # that 0.0 maps to 1.0 and inf maps to 0
         print(
-            "[reward dist]", {
+            "[reward dist]",
+            {
                 "best_y": np.max(y) if higher_is_better else np.min(y),
                 "worst_y": np.min(y) if higher_is_better else np.max(y),
                 "mean_y": np.mean(y),
-            }
+            },
         )
         best_idx = np.argmax(y) if higher_is_better else np.argmin(y)
         worst_idx = np.argmin(y) if higher_is_better else np.argmax(y)

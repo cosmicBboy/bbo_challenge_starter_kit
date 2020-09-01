@@ -3,6 +3,7 @@
 from copy import copy
 from typing import List, Any, Union
 
+import gpytorch
 import numpy as np
 import torch
 import torch.nn as nn
@@ -10,6 +11,7 @@ import torch.nn.functional as F
 import torch.distributions as D
 
 from custom_typing import Array
+from gaussian_process import train_gp_model
 
 
 def fill_tril_2d_square(fill, values):
@@ -26,16 +28,14 @@ class Agent(nn.Module):
     """A single metalearning agent."""
 
     def __init__(
-        self,
-        n_actions,
-        hidden_size,
-        dropout=0.01,
+        self, n_actions, hidden_size, max_cholesky_size=1000, dropout=0.01,
     ):
         super(Agent, self).__init__()
 
         self.hidden_size = hidden_size
         self.n_actions = n_actions
         self.dropout = dropout
+        self.max_cholesky_size = max_cholesky_size
 
         # input is observation is composed of:
         # - hyperparameter anchors of the same dim as n_actions
@@ -47,7 +47,6 @@ class Agent(nn.Module):
             nn.LayerNorm(hidden_size),
         )
 
-        # TODO: use gaussian process model as the critic
         self.critic = nn.Sequential(
             nn.Linear(hidden_size + (n_actions * 3), hidden_size),
             nn.Dropout(dropout),
@@ -56,19 +55,6 @@ class Agent(nn.Module):
         )
 
         # policy parameter layers
-        # self.cov = nn.Sequential(
-        #     nn.Linear(hidden_size, n_actions),
-        #     nn.Dropout(dropout),
-        #     nn.LayerNorm(n_actions),
-        #     nn.Hardsigmoid(),
-        # )
-        # self.cov_scaler = nn.Sequential(
-        #     nn.Linear(hidden_size, n_actions),
-        #     nn.Dropout(dropout),
-        #     nn.LayerNorm(n_actions),
-        #     nn.Hardsigmoid(),
-        # )
-        # self.distribution = D.MultivariateNormal
         self.cov_factor = nn.Sequential(
             nn.Linear(hidden_size, n_actions),
             nn.Dropout(dropout),
@@ -84,17 +70,41 @@ class Agent(nn.Module):
 
         self.distribution = D.LowRankMultivariateNormal
         self.memory = Memory()
+        self.gp_model = None
+        self.hypers = None
+
+    def update_gp(self, obs, actions, rewards, num_steps=100):
+        with gpytorch.settings.max_cholesky_size(self.max_cholesky_size):
+            self.gp_model = train_gp_model(
+                X=torch.cat([obs, actions, obs + actions], dim=1).double(),
+                y=rewards.double(),
+                num_steps=num_steps,
+                hypers=self.hypers,
+            )
+            # save gp hyperparameters
+            self.hypers = self.gp_model.state_dict()
+
+    def get_value(self, obs, actions, adjusted_obs):
+        adjusted_obs = torch.clamp(obs + actions, 0, 1)
+        self.gp_model.eval()
+        self.gp_model.likelihood.eval()
+        with torch.no_grad(), gpytorch.settings.max_cholesky_size(
+            self.max_cholesky_size
+        ):
+            value_dist = self.gp_model.likelihood(
+                self.gp_model(
+                    torch.cat([obs, actions, adjusted_obs], dim=0)
+                    .double()
+                    .view(1, -1)
+                )
+            )
+            return value_dist.sample(torch.Size([1])).squeeze()
 
     def forward(self, obs, cov_scaler=1.0):
-        # TODO: idea - explicitly model the distance between obs and actions
-        # when producing value estimate
         encoded = self.encoder(obs)
-        actions, log_probs, entropy, prob_dist = self.act(encoded)
-        actions *= cov_scaler
+        actions, log_probs, entropy, prob_dist = self.act(encoded, cov_scaler)
         adjusted_obs = torch.clamp(obs + actions, 0, 1)
-        value = self.critic(
-            torch.cat([encoded, actions, obs, adjusted_obs])
-        )[0]
+        value = self.get_value(obs, actions, adjusted_obs)
         self.memory.record(
             obs, actions, adjusted_obs, log_probs, entropy, value, prob_dist
         )
@@ -107,18 +117,15 @@ class Agent(nn.Module):
             self.cov_diag(encoded),
         )
 
-    def act(self, encoded):
+    def act(self, encoded, cov_scaler=1.0):
         prob_dist = self.prob_dist(encoded)
-        actions = prob_dist.rsample()
+        actions = prob_dist.rsample() * cov_scaler
         log_probs = prob_dist.log_prob(actions)
         return actions, log_probs, prob_dist.entropy(), prob_dist
 
     def evaluate_actions(self, obs, actions):
-        encoded = self.encoder(obs)
         adjusted_obs = torch.clamp(obs + actions, 0, 1)
-        value = self.critic(
-            torch.cat([encoded, actions, obs, adjusted_obs])
-        )[0]
+        value = self.get_value(obs, actions, adjusted_obs)
         return value
 
     def evaluate_experiences(self, obs, actions):
@@ -127,9 +134,7 @@ class Agent(nn.Module):
         prob_dist = self.prob_dist(encoded)
         log_probs = prob_dist.log_prob(actions)
         adjusted_obs = torch.clamp(obs + actions, 0, 1)
-        value = self.critic(
-            torch.cat([encoded, actions, obs, adjusted_obs])
-        )[0]
+        value = self.get_value(obs, actions, adjusted_obs)
         return value, log_probs, prob_dist.entropy()
 
     def update(self, rewards, entropy_coef=0.0):
@@ -159,7 +164,7 @@ class Memory:
         ] = [] if adjusted_obs is None else adjusted_obs
         self.log_probs: List[Array] = [] if log_probs is None else log_probs
         self.entropies: List[Array] = [] if entropies is None else entropies
-        self.values: List[Array] = [] if values is None else values
+        self.values: List[List[Array]] = [] if values is None else values
         self.prob_dists: List[Array] = [] if prob_dists is None else prob_dists
 
     def items(self):
@@ -197,8 +202,8 @@ class Memory:
         memory = Memory(
             *[
                 [
-                    x if isinstance(x, np.ndarray)
-                    else x.detach().numpy() for x in mem_list
+                    x if isinstance(x, np.ndarray) else x.detach().numpy()
+                    for x in mem_list
                 ]
                 for mem_list in (
                     self.obs,
@@ -209,7 +214,8 @@ class Memory:
                     self.values,
                 )
                 if mem_list is not None
-            ] + [self.prob_dists]
+            ]
+            + [self.prob_dists]
         )
         self.erase()
         return memory
