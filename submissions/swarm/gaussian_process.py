@@ -72,14 +72,6 @@ def train_gp_model(
         output = model(X)
         loss = -mll(output, y)
         loss.backward()
-        # print(
-        #     "Loss: %.3f   lengthscale: %.3f   noise: %.3f"
-        #     % (
-        #         loss.item(),
-        #         model.covar_module.base_kernel.lengthscale.mean().item(),
-        #         model.likelihood.noise.item(),
-        #     )
-        # )
         optimizer.step()
 
     model.eval()

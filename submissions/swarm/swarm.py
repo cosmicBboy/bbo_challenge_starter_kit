@@ -28,6 +28,10 @@ from utils import derive_reward
 #   - maybe it should estimate the error between reward and the
 #     collective value estimate?
 
+# TODO:
+# - try constraining cov matrix and adding learnable mu parameter for policy
+# - modify Agent to produce batch_size of actions in the forward pass
+
 
 class Swarm:
     def __init__(
@@ -37,12 +41,14 @@ class Swarm:
         anchor_fn,
         optim,
         optim_config,
+        num_gp_update_steps=100,
         success_threshold=3,
         failure_tolerance=4,
     ):
         self.n_agents = n_agents
         self.n_actions = agent_config["n_actions"]
         self.anchor_fn = anchor_fn
+        self.num_gp_update_steps = num_gp_update_steps
         self.success_threshold = success_threshold
         self.failure_tolerance = failure_tolerance
 
@@ -101,6 +107,7 @@ class Swarm:
                 torch.stack(experiences["obs"]),
                 torch.stack(experiences["actions"]),
                 torch.stack(experiences["rewards"]),
+                self.num_gp_update_steps,
             )
 
         best_idx = torch.argmax(rewards).item()
@@ -126,8 +133,7 @@ class Swarm:
 
     @property
     def cov_scaler(self):
-        # return 1
-        return 1 / (self.n_successes + 1)
+        return 1 / (1 + self.n_successes + self.n_updates * 0.1)
 
     def __call__(self, batch_size, n_per_agent=10):
         # TODO: enable off-policy learning by having evaluator agents generate
@@ -138,9 +144,7 @@ class Swarm:
         if self.n_updates == 0:
             return self.init_suggestions(batch_size)
 
-        # cov_scaler = 1.0
-        cov_scaler = self.cov_scaler
-        print(f"[cov scaler] {cov_scaler}")
+        print(f"[cov scaler] {self.cov_scaler}")
 
         suggestions = []
         for _ in range(batch_size):
@@ -154,7 +158,7 @@ class Swarm:
                     agent_candidates,
                     agent_actions,
                 ) = local_agent.create_candidates(
-                    self.best_obs, n_per_agent, cov_scaler=cov_scaler
+                    self.best_obs, n_per_agent, cov_scaler=self.cov_scaler
                 )
                 candidates.extend(agent_candidates)
                 actions.extend(agent_actions)
@@ -285,6 +289,7 @@ class Swarm:
                 torch.stack(experiences["obs"]),
                 torch.stack(experiences["actions"]),
                 torch.stack(experiences["rewards"]),
+                self.num_gp_update_steps,
             )
 
         agent_memories = []

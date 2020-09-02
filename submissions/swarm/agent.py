@@ -28,7 +28,12 @@ class Agent(nn.Module):
     """A single metalearning agent."""
 
     def __init__(
-        self, n_actions, hidden_size, max_cholesky_size=1000, dropout=0.01,
+        self,
+        n_actions,
+        hidden_size,
+        max_cholesky_size=1000,
+        dropout=0.01,
+        policy_lowrank_normal=False,
     ):
         super(Agent, self).__init__()
 
@@ -36,6 +41,7 @@ class Agent(nn.Module):
         self.n_actions = n_actions
         self.dropout = dropout
         self.max_cholesky_size = max_cholesky_size
+        self.policy_lowrank_normal = policy_lowrank_normal
 
         # input is observation is composed of:
         # - hyperparameter anchors of the same dim as n_actions
@@ -55,20 +61,36 @@ class Agent(nn.Module):
         )
 
         # policy parameter layers
-        self.cov_factor = nn.Sequential(
-            nn.Linear(hidden_size, n_actions),
+        self.cov_scaler = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size),
             nn.Dropout(dropout),
-            nn.LayerNorm(n_actions),
+            nn.LayerNorm(hidden_size),
+            nn.Linear(hidden_size, 1),
             nn.Hardsigmoid(),
         )
-        self.cov_diag = nn.Sequential(
-            nn.Linear(hidden_size, n_actions),
-            nn.Dropout(dropout),
-            nn.LayerNorm(n_actions),
-            nn.Hardsigmoid(),
-        )
+        if policy_lowrank_normal:
+            self.cov_factor = nn.Sequential(
+                nn.Linear(hidden_size, n_actions),
+                nn.Dropout(dropout),
+                nn.LayerNorm(n_actions),
+                nn.Hardsigmoid(),
+            )
+            self.cov_diag = nn.Sequential(
+                nn.Linear(hidden_size, n_actions),
+                nn.Dropout(dropout),
+                nn.LayerNorm(n_actions),
+                nn.Hardsigmoid(),
+            )
+            self.distribution = D.LowRankMultivariateNormal
+        else:
+            self.cov = nn.Sequential(
+                nn.Linear(hidden_size, n_actions),
+                nn.Dropout(dropout),
+                nn.LayerNorm(n_actions),
+                nn.Hardsigmoid(),
+            )
+            self.distribution = D.MultivariateNormal
 
-        self.distribution = D.LowRankMultivariateNormal
         self.memory = Memory()
         self.gp_model = None
         self.hypers = None
@@ -98,7 +120,8 @@ class Agent(nn.Module):
                     .view(1, -1)
                 )
             )
-            return value_dist.sample(torch.Size([1])).squeeze()
+            return value_dist.mean
+            # return value_dist.sample(torch.Size([1])).squeeze()
 
     def forward(self, obs, cov_scaler=1.0):
         encoded = self.encoder(obs)
@@ -111,11 +134,20 @@ class Agent(nn.Module):
         return actions, adjusted_obs, log_probs, entropy, value, prob_dist
 
     def prob_dist(self, encoded):
-        return self.distribution(
-            torch.zeros(self.n_actions),
-            self.cov_factor(encoded).view(-1, 1),
-            self.cov_diag(encoded),
-        )
+        if self.policy_lowrank_normal:
+            return self.distribution(
+                torch.zeros(self.n_actions),
+                (
+                    self.cov_factor(encoded).view(-1, 1)
+                    * self.cov_scaler(encoded)
+                ),
+                self.cov_diag(encoded) * self.cov_scaler(encoded),
+            )
+        else:
+            return self.distribution(
+                torch.zeros(self.n_actions),
+                self.cov(encoded).diag() * self.cov_scaler(encoded),
+            )
 
     def act(self, encoded, cov_scaler=1.0):
         prob_dist = self.prob_dist(encoded)

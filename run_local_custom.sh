@@ -43,18 +43,22 @@ cp ./input/baseline-$N_STEP-$N_BATCH.json $DB_ROOT/$DBID/derived/baseline.json
 # To run on all problems use instead (slower):
 # bayesmark-launch \
 #     -dir $DB_ROOT -b $DBID -n $N_STEP -r $N_REPEAT -p $N_BATCH -o $OPT \
-#     --opt-root $OPT_ROOT -v \
-#     --uuid 2aefe46705d94924b283a3c60767d6ee
+#     --opt-root $OPT_ROOT -v --uuid 2aefe46705d94924b283a3c60767d6ee
 
 # bayesmark-launch \
 #     -dir $DB_ROOT -b $DBID -n $N_STEP -r $N_REPEAT -p $N_BATCH -o $OPT \
-#     --opt-root $OPT_ROOT -v -c DT -d digits boston -m acc nll mae mse \
+#     --opt-root $OPT_ROOT -v -d boston digits -m acc mse \
+#     --uuid 6505a7e555754367b516efefa70315f5
+
+# bayesmark-launch \
+#     -dir $DB_ROOT -b $DBID -n $N_STEP -r $N_REPEAT -p $N_BATCH -o $OPT \
+#     --opt-root $OPT_ROOT -v -c DT -d boston digits -m mse acc \
 #     --uuid 6505a7e555754367b516efefa70315f5
 
 bayesmark-launch \
     -dir $DB_ROOT -b $DBID -n $N_STEP -r $N_REPEAT -p $N_BATCH -o $OPT \
-    --opt-root $OPT_ROOT -v -c DT -d boston digits -m mae mse nll acc \
-    --uuid 6505a7e555754367b516efefa70315f5
+    --opt-root $OPT_ROOT -v -c DT -d diabetes wine -m mse acc \
+    --uuid aa23cdfee1214527a55595fbba82122b
 
 # bayesmark-launch \
 #     -dir $DB_ROOT -b $DBID -n $N_STEP -r $N_REPEAT -p $N_BATCH -o $OPT \
