@@ -1,4 +1,4 @@
-"""Metalearn Agent."""
+"""SWARM Agent."""
 
 from copy import copy
 from typing import List, Any, Union
@@ -25,7 +25,7 @@ def fill_tril_2d_square(fill, values):
 
 
 class Agent(nn.Module):
-    """A single metalearning agent."""
+    """A single agent."""
 
     def __init__(
         self,
@@ -47,39 +47,48 @@ class Agent(nn.Module):
         # - hyperparameter anchors of the same dim as n_actions
         # - the agent's actions with range (-1, 1)
         # - the scalar reward
+
+        # TODO: add non-linearities here
         self.encoder = nn.Sequential(
             nn.Linear(n_actions, hidden_size),
             nn.Dropout(dropout),
             nn.LayerNorm(hidden_size),
-        )
-
-        self.critic = nn.Sequential(
-            nn.Linear(hidden_size + (n_actions * 3), hidden_size),
-            nn.Dropout(dropout),
-            nn.LayerNorm(hidden_size),
-            nn.Linear(hidden_size, 1),
-        )
-
-        # policy parameter layers
-        self.cov_scaler = nn.Sequential(
+            nn.GELU(),
             nn.Linear(hidden_size, hidden_size),
             nn.Dropout(dropout),
             nn.LayerNorm(hidden_size),
-            nn.Linear(hidden_size, 1),
-            nn.Hardsigmoid(),
+            nn.GELU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.Dropout(dropout),
+            nn.LayerNorm(hidden_size),
+            nn.GELU(),
+        )
+
+        # policy parameter layers
+        self.mu = nn.Sequential(
+            nn.Linear(hidden_size, n_actions),
+            nn.Dropout(dropout),
+            nn.LayerNorm(n_actions),
+            nn.Tanh(),
+        )
+        self.mu_scaler = nn.Sequential(
+            nn.Linear(hidden_size, n_actions),
+            nn.Dropout(dropout),
+            nn.LayerNorm(n_actions),
+            nn.Softplus(),
         )
         if policy_lowrank_normal:
             self.cov_factor = nn.Sequential(
                 nn.Linear(hidden_size, n_actions),
                 nn.Dropout(dropout),
                 nn.LayerNorm(n_actions),
-                nn.Hardsigmoid(),
+                nn.Sigmoid(),
             )
             self.cov_diag = nn.Sequential(
                 nn.Linear(hidden_size, n_actions),
                 nn.Dropout(dropout),
                 nn.LayerNorm(n_actions),
-                nn.Hardsigmoid(),
+                nn.Sigmoid(),
             )
             self.distribution = D.LowRankMultivariateNormal
         else:
@@ -87,11 +96,17 @@ class Agent(nn.Module):
                 nn.Linear(hidden_size, n_actions),
                 nn.Dropout(dropout),
                 nn.LayerNorm(n_actions),
-                nn.Hardsigmoid(),
+                nn.Sigmoid(),
             )
             self.distribution = D.MultivariateNormal
 
-        self.memory = Memory()
+        self.cov_scaler = nn.Sequential(
+            nn.Linear(hidden_size, n_actions),
+            nn.Dropout(dropout),
+            nn.LayerNorm(n_actions),
+            nn.Sigmoid(),
+        )
+
         self.gp_model = None
         self.hypers = None
 
@@ -99,6 +114,7 @@ class Agent(nn.Module):
         with gpytorch.settings.max_cholesky_size(self.max_cholesky_size):
             self.gp_model = train_gp_model(
                 X=torch.cat([obs, actions, obs + actions], dim=1).double(),
+                # X=torch.cat([obs + actions], dim=1).double(),
                 y=rewards.double(),
                 num_steps=num_steps,
                 hypers=self.hypers,
@@ -107,58 +123,71 @@ class Agent(nn.Module):
             self.hypers = self.gp_model.state_dict()
 
     def get_value(self, obs, actions, adjusted_obs):
-        adjusted_obs = torch.clamp(obs + actions, 0, 1)
         self.gp_model.eval()
         self.gp_model.likelihood.eval()
         with torch.no_grad(), gpytorch.settings.max_cholesky_size(
             self.max_cholesky_size
         ):
-            value_dist = self.gp_model.likelihood(
-                self.gp_model(
-                    torch.cat([obs, actions, adjusted_obs], dim=0)
-                    .double()
-                    .view(1, -1)
-                )
-            )
+            X = torch.cat([
+                torch.repeat_interleave(
+                    obs.unsqueeze(0), actions.shape[0], dim=0
+                ),
+                actions,
+                adjusted_obs,
+            ], dim=1).double()
+            # X = adjusted_obs.double()
+            value_dist = self.gp_model.likelihood(self.gp_model(X))
+            # TODO: do something with the stddev of the distribution
             return value_dist.mean
-            # return value_dist.sample(torch.Size([1])).squeeze()
+            # if batch_size == 1:
+            #     return value_dist.mean
+            # else:
+            #     return value_dist.sample(torch.Size([batch_size])).t()
 
-    def forward(self, obs, cov_scaler=1.0):
+    def forward(self, obs, n_candidates, action_scaler=1.0, cov_scaler=1.0):
+        """
+        Parameters:
+            obs: tensor of observation
+            n: generate this number of actions
+            cov_scaler: manually scales the actions
+
+        Returns:
+            actions, adjusted observations, action log probabilities, entropy,
+            and value.
+        """
         encoded = self.encoder(obs)
-        actions, log_probs, entropy, prob_dist = self.act(encoded, cov_scaler)
+        actions, log_probs, entropy = self.act(
+            encoded, n_candidates, action_scaler, cov_scaler,
+        )
         adjusted_obs = torch.clamp(obs + actions, 0, 1)
         value = self.get_value(obs, actions, adjusted_obs)
-        self.memory.record(
-            obs, actions, adjusted_obs, log_probs, entropy, value, prob_dist
-        )
-        return actions, adjusted_obs, log_probs, entropy, value, prob_dist
+        return actions, adjusted_obs, log_probs, entropy.unsqueeze(0), value
 
-    def prob_dist(self, encoded):
+    def prob_dist(self, encoded, mu_scaler=1.0, cov_scaler=1.0):
         if self.policy_lowrank_normal:
             return self.distribution(
-                torch.zeros(self.n_actions),
+                self.mu(encoded) * self.mu_scaler(encoded),
                 (
-                    self.cov_factor(encoded).view(-1, 1)
+                    self.cov_factor(encoded)
                     * self.cov_scaler(encoded)
-                ),
-                self.cov_diag(encoded) * self.cov_scaler(encoded),
+                ).view(-1, 1),
+                self.cov_diag(encoded),
             )
         else:
             return self.distribution(
-                torch.zeros(self.n_actions),
-                self.cov(encoded).diag() * self.cov_scaler(encoded),
+                self.mu(encoded) * self.mu_scaler(encoded),
+                (
+                    self.cov(encoded).diag()
+                    * self.cov_scaler(encoded)
+                    * cov_scaler
+                ),
             )
 
-    def act(self, encoded, cov_scaler=1.0):
-        prob_dist = self.prob_dist(encoded)
-        actions = prob_dist.rsample() * cov_scaler
+    def act(self, encoded, n_candidates, action_scaler=1.0, cov_scaler=1.0):
+        prob_dist = self.prob_dist(encoded, cov_scaler=cov_scaler)
+        actions = prob_dist.rsample(torch.Size([n_candidates])) * action_scaler
         log_probs = prob_dist.log_prob(actions)
-        return actions, log_probs, prob_dist.entropy(), prob_dist
-
-    def evaluate_actions(self, obs, actions):
-        adjusted_obs = torch.clamp(obs + actions, 0, 1)
-        value = self.get_value(obs, actions, adjusted_obs)
-        return value
+        return actions, log_probs, prob_dist.entropy()
 
     def evaluate_experiences(self, obs, actions):
         """Policy and critic evaluates past actions."""
@@ -167,7 +196,7 @@ class Agent(nn.Module):
         log_probs = prob_dist.log_prob(actions)
         adjusted_obs = torch.clamp(obs + actions, 0, 1)
         value = self.get_value(obs, actions, adjusted_obs)
-        return value, log_probs, prob_dist.entropy()
+        return value.squeeze(), log_probs.squeeze(), prob_dist.entropy()
 
     def update(self, rewards, entropy_coef=0.0):
         advantage = rewards - torch.stack(self.memory.values)
@@ -178,85 +207,9 @@ class Agent(nn.Module):
         return loss, self.memory.detach()
 
 
-class Memory:
-    def __init__(
-        self,
-        obs=None,
-        actions=None,
-        adjusted_obs=None,
-        log_probs=None,
-        entropies=None,
-        values=None,
-        prob_dists=None,
-    ):
-        self.obs: List[List[Array]] = [] if obs is None else obs
-        self.actions: List[List[Array]] = [] if actions is None else actions
-        self.adjusted_obs: List[
-            List[Array]
-        ] = [] if adjusted_obs is None else adjusted_obs
-        self.log_probs: List[Array] = [] if log_probs is None else log_probs
-        self.entropies: List[Array] = [] if entropies is None else entropies
-        self.values: List[List[Array]] = [] if values is None else values
-        self.prob_dists: List[Array] = [] if prob_dists is None else prob_dists
-
-    def items(self):
-        return {
-            "obs": self.obs,
-            "actions": self.actions,
-            "adjusted_obs": self.adjusted_obs,
-            "log_probs": self.log_probs,
-            "entropies": self.entropies,
-            "values": self.values,
-            "prob_dists": [copy(x) for x in self.prob_dists],
-        }.items()
-
-    def record(
-        self, obs, action, adjusted_obs, log_probs, entropy, value, prob_dists
-    ):
-        self.obs.append(obs)
-        self.actions.append(action)
-        self.adjusted_obs.append(adjusted_obs)
-        self.log_probs.append(log_probs)
-        self.entropies.append(entropy)
-        self.values.append(value)
-        self.prob_dists.append(prob_dists)
-
-    def erase(self):
-        del self.obs[:]
-        del self.actions[:]
-        del self.adjusted_obs[:]
-        del self.log_probs[:]
-        del self.entropies[:]
-        del self.values[:]
-        del self.prob_dists[:]
-
-    def detach(self):
-        memory = Memory(
-            *[
-                [
-                    x if isinstance(x, np.ndarray) else x.detach().numpy()
-                    for x in mem_list
-                ]
-                for mem_list in (
-                    self.obs,
-                    self.actions,
-                    self.adjusted_obs,
-                    self.log_probs,
-                    self.entropies,
-                    self.values,
-                )
-                if mem_list is not None
-            ]
-            + [self.prob_dists]
-        )
-        self.erase()
-        return memory
-
-
 if __name__ == "__main__":
     # TODO: turn this into a set of unit test
     from typing import Dict
-    import numpy as np
 
     np.random.seed(1001)
 

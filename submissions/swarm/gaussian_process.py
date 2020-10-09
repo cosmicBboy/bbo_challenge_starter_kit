@@ -5,7 +5,7 @@ import gpytorch
 from gpytorch.constraints.constraints import Interval
 
 
-class ValueGP(gpytorch.models.ExactGP):
+class CriticGP(gpytorch.models.ExactGP):
     def __init__(
         self,
         X,
@@ -15,7 +15,7 @@ class ValueGP(gpytorch.models.ExactGP):
         lengthscale_constraint,
         outputscale_constraint,
     ):
-        super(ValueGP, self).__init__(X, y, likelihood)
+        super(CriticGP, self).__init__(X, y, likelihood)
         self.ard_dims = ndims
         self.mean_module = gpytorch.means.ConstantMean()
         base_kernel = gpytorch.kernels.MaternKernel(
@@ -35,13 +35,14 @@ def train_gp_model(
     X, y, num_steps, hypers=None,
 ):
     noise_constraint = Interval(5e-4, 0.2)
-    lengthscale_constraint = Interval(0.005, math.sqrt(X.shape[1]))
+    # lengthscale_constraint = Interval(0.005, math.sqrt(X.shape[1]))
+    lengthscale_constraint = Interval(0.005, 2.0)
     outputscale_constraint = Interval(0.05, 20.0)
 
     likelihood = gpytorch.likelihoods.GaussianLikelihood(
         noise_constraint=noise_constraint
     )
-    model = ValueGP(
+    model = CriticGP(
         X,
         y,
         likelihood,
@@ -67,7 +68,7 @@ def train_gp_model(
             }
         )
 
-    for _ in range(num_steps):
+    for i in range(num_steps):
         optimizer.zero_grad()
         output = model(X)
         loss = -mll(output, y)

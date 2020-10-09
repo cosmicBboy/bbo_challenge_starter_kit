@@ -112,6 +112,7 @@ class TurboOptimizer(AbstractOptimizer):
 
         # Unwarp the suggestions
         suggestions = self.space_x.unwarp(X_next)
+        print("[suggestions]\n", X_next)
 
         return suggestions
 
@@ -143,8 +144,6 @@ class TurboOptimizer(AbstractOptimizer):
         )
         best_idx = np.argmax(y) if higher_is_better else np.argmin(y)
         worst_idx = np.argmin(y) if higher_is_better else np.argmax(y)
-        print("[max reward action]", X[best_idx])
-        print("[min reward action]", X[worst_idx])
         print("-------")
         XX, yy = self.space_x.warp(X), np.array(y)[:, None]
 

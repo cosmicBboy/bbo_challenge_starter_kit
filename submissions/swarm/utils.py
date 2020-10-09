@@ -45,9 +45,8 @@ def derive_reward(y, best_y=None):
     # yy = exponentiated_log(y) if all(i > 0 for i in y) else y
     yy = copula_standardize([-i for i in y])
     rewards = torch.tensor(yy)
-    rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-7)
+    rewards = (rewards - rewards.median()) / (rewards.std() + 1e-6)
     return rewards[:n_orig]
-    # return rewards
 
 
 def compute_grad_norm(agent):

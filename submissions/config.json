@@ -3,13 +3,16 @@
         "swarm/optimizer.py",
         {
             "n_agents": 1,
-            "n_per_agent": 20,
+            "n_candidates": 20,
+            "n_iter": 50,
             "num_gp_update_steps": 100,
-            "hidden_size": 32,
-            "dropout": 0.0,
-            "learning_rate": 0.1,
-            "weight_decay": 1.0,
-            "entropy_coef": 0.1,
+            "n_perturb": 10,
+            "noise_window": 0.1,
+            "hidden_size": 64,
+            "dropout": 0.1,
+            "learning_rate": 0.3,
+            "weight_decay": 100.0,
+            "entropy_coef": 0.01,
             "clip_grad": 1.0
         }
     ],
@@ -17,7 +20,8 @@
         "swarm/optimizer.py",
         {
             "n_agents": 1,
-            "n_per_agent": 20,
+            "n_candidates": 20,
+            "n_iter": 5,
             "hidden_size": 128,
             "dropout": 0.01,
             "learning_rate": 0.003,

@@ -1,5 +1,4 @@
 import traceback
-from copy import deepcopy
 from typing import Dict, List, NamedTuple, Any, Union
 
 import numpy as np
@@ -7,7 +6,7 @@ import scipy.stats as ss
 import torch
 import torch.nn as nn
 
-from agent import Agent, Memory
+from agent import Agent
 from swarm import Swarm
 from utils import (
     copula_standardize,
@@ -34,16 +33,17 @@ class SwarmOptimizer(AbstractOptimizer):
         self,
         api_config,
         n_agents=1,
-        n_per_agent=20,
-        num_gp_update_steps=100,
-        hidden_size=32,
-        dropout=0.0,
-        learning_rate=0.1,
-        weight_decay=1.0,
+        n_candidates=20,
+        n_iter=200,
+        num_gp_update_steps=200,
+        n_perturb=3,
+        noise_window=0.1,
+        hidden_size=64,
+        dropout=0.1,
+        learning_rate=0.3,
+        weight_decay=1000.0,
         entropy_coef=0.1,
         clip_grad=1.0,
-        success_threshold=0,
-        failure_tolerance=100,
     ):
         """Build wrapper class to use optimizer in benchmark.
 
@@ -54,7 +54,8 @@ class SwarmOptimizer(AbstractOptimizer):
         """
         AbstractOptimizer.__init__(self, api_config)
 
-        self.n_per_agent = n_per_agent
+        self.n_candidates = n_candidates
+        self.n_iter = n_iter
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
         self.entropy_coef = entropy_coef
@@ -81,31 +82,7 @@ class SwarmOptimizer(AbstractOptimizer):
                 "weight_decay": self.weight_decay,
             },
             num_gp_update_steps=num_gp_update_steps,
-            success_threshold=success_threshold,
-            failure_tolerance=failure_tolerance,
         )
-
-        # TODO:
-        # 1 Agent Case:
-        # - first suggestion: select random set of points
-        # - > 1 suggestion: use best point from first suggestion as anchor
-        #   point for agent
-        # - update anchor points based on best suggestion so far
-        #
-        # N agent case:
-        # - first suggestion: select random set of points
-        # - > 1 suggestion: use best point from first suggestion as anchor
-        #   points for all agents
-        # - experiment:
-        #   - variant 1: independently update anchor points based on best
-        #     suggestion found per agent
-        #   - variant 2: globally update anchor points based on best suggestion
-        #     found across all agents
-        #
-        # Experiment
-        # - scale covariance matrix to constrain agent actions to some percent
-        #   of the domain [0, 1]
-        # - make scaling value a learnable parameter?
 
     def suggest(self, n_suggestions=1):
         """Get suggestions from the optimizer.
@@ -123,18 +100,16 @@ class SwarmOptimizer(AbstractOptimizer):
             corresponds to a parameter being optimized.
         """
         try:
-            suggestions = torch.stack(
-                self.swarm(
-                    n_suggestions,
-                    n_suggestions
-                    if self.n_per_agent is None
-                    else self.n_per_agent,
-                )
+            suggestions = self.swarm(
+                n_suggestions,
+                self.n_candidates,
+                self.n_iter,
             )
             # make sure suggestions are within bounds
             suggestions = from_unit_cube(
                 suggestions.detach().numpy(), self.lb, self.ub
             )
+            print("[suggestions]\n", suggestions)
             suggestions = self.space_x.unwarp(suggestions)
             return suggestions
         except Exception:
@@ -156,32 +131,29 @@ class SwarmOptimizer(AbstractOptimizer):
             self.swarm.optim.zero_grad()
             loss = self.swarm.update(y, self.entropy_coef)
             if loss is None:
-                return
+                loss, grad_norm = np.nan, np.nan
+            else:
+                loss.backward()
 
-            loss.backward()
-
-            grad_norm = 0.0
-            print(
-                "[selected agents]",
-                self.swarm.history.collective_memories[-1].agent_index,
-            )
-            # TODO: should clip gradients for all agents since they are also
-            # evaluating the value of actions off-policy
-            for local_agent in self.swarm.local_agents:
-                nn.utils.clip_grad_norm_(
-                    local_agent.agent.parameters(), self.clip_grad
+                grad_norm = 0.0
+                print(
+                    "[selected agents]",
+                    self.swarm.history.collective_memories[-1].agent_ids,
                 )
-                grad_norm += compute_grad_norm(local_agent.agent)
-            grad_norm /= self.swarm.n_agents
+                for local_agent in self.swarm.local_agents:
+                    nn.utils.clip_grad_norm_(
+                        local_agent.agent.parameters(), self.clip_grad
+                    )
+                    grad_norm += compute_grad_norm(local_agent.agent)
+                grad_norm /= self.swarm.n_agents
+                loss = loss.detach().item()
+                self.swarm.optim.step()
 
-            self.swarm.optim.step()
-
-            best_y = min(y)
             print(
                 {
                     "mean_y": f"{np.mean(y):0.04f}",
-                    "best_y": f"{best_y:0.04f}",
-                    "loss": f"{loss.detach().item():0.04f}",
+                    "best_y": f"{min(y):0.04f}",
+                    "loss": f"{loss:0.04f}",
                     "grad_norm": f"{grad_norm:0.04f}",
                 },
                 f"\n{'-' * 30}",
